@@ -1,0 +1,152 @@
+from pathlib import Path
+import sys
+
+from cx_Freeze import Executable, setup
+
+
+ROOT = Path(__file__).resolve().parent
+ASSETS = ROOT / "assets"
+TOOLS = ROOT / "tools"
+PYTHON_HOME = Path(sys.base_prefix)
+
+
+def build_output_dir() -> Path:
+    for index, arg in enumerate(sys.argv):
+        if arg == "--build-exe" and index + 1 < len(sys.argv):
+            return Path(sys.argv[index + 1])
+        if arg.startswith("--build-exe="):
+            return Path(arg.split("=", 1)[1])
+    return ROOT / "build" / "exe.win-amd64-3.14"
+
+
+build_exe_options = {
+    "packages": [
+        "json",
+        "locale",
+        "os",
+        "re",
+        "secrets",
+        "shutil",
+        "socket",
+        "subprocess",
+        "sys",
+        "tempfile",
+        "threading",
+        "time",
+        "urllib",
+        "zipfile",
+        "ctypes",
+        "dataclasses",
+        "functools",
+        "pathlib",
+        "psutil",
+        "py7zr",
+        "bcj",
+        "pyppmd",
+        "Cryptodome",
+        "multivolumefile",
+        "inflate64",
+        "brotli",
+        "texttable",
+    ],
+    "includes": [
+        "winreg",
+        "PySide6.QtCore",
+        "PySide6.QtGui",
+        "PySide6.QtWidgets",
+    ],
+    "excludes": [
+        "PySide6.Qt3DAnimation",
+        "PySide6.Qt3DCore",
+        "PySide6.Qt3DExtras",
+        "PySide6.Qt3DInput",
+        "PySide6.Qt3DLogic",
+        "PySide6.Qt3DRender",
+        "PySide6.QtBluetooth",
+        "PySide6.QtCharts",
+        "PySide6.QtConcurrent",
+        "PySide6.QtDataVisualization",
+        "PySide6.QtDBus",
+        "PySide6.QtDesigner",
+        "PySide6.QtGraphs",
+        "PySide6.QtHelp",
+        "PySide6.QtHttpServer",
+        "PySide6.QtLocation",
+        "PySide6.QtMultimedia",
+        "PySide6.QtMultimediaWidgets",
+        "PySide6.QtNetworkAuth",
+        "PySide6.QtNfc",
+        "PySide6.QtOpenGL",
+        "PySide6.QtOpenGLWidgets",
+        "PySide6.QtPdf",
+        "PySide6.QtPdfWidgets",
+        "PySide6.QtPositioning",
+        "PySide6.QtPrintSupport",
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
+        "PySide6.QtQuick3D",
+        "PySide6.QtQuickControls2",
+        "PySide6.QtQuickWidgets",
+        "PySide6.QtRemoteObjects",
+        "PySide6.QtScxml",
+        "PySide6.QtSensors",
+        "PySide6.QtSerialBus",
+        "PySide6.QtSerialPort",
+        "PySide6.QtSpatialAudio",
+        "PySide6.QtSql",
+        "PySide6.QtStateMachine",
+        "PySide6.QtSvg",
+        "PySide6.QtSvgWidgets",
+        "PySide6.QtTest",
+        "PySide6.QtTextToSpeech",
+        "PySide6.QtUiTools",
+        "PySide6.QtWebChannel",
+        "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineQuick",
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.QtWebSockets",
+        "PySide6.QtWebView",
+        "PySide6.QtXml",
+        "PySide6.QtXmlPatterns",
+    ],
+    "include_files": [
+        (str(PYTHON_HOME / "vcruntime140.dll"), "vcruntime140.dll"),
+        (str(PYTHON_HOME / "vcruntime140_1.dll"), "vcruntime140_1.dll"),
+        (str(ASSETS / "comfy_portal.ico"), "assets/comfy_portal.ico"),
+        (str(ASSETS / "comfy_portal_icon.png"), "assets/comfy_portal_icon.png"),
+        (str(ASSETS / "telegram_brand.png"), "assets/telegram_brand.png"),
+        (str(ASSETS / "settings_brand.png"), "assets/settings_brand.png"),
+        (str(ASSETS / "github_brand_light.png"), "assets/github_brand_light.png"),
+        (str(ASSETS / "github_brand_dark.png"), "assets/github_brand_dark.png"),
+        (str(TOOLS / "7zr.exe"), "tools/7zr.exe"),
+        (str(TOOLS / "7zip.LICENSE.txt"), "tools/7zip.LICENSE.txt"),
+    ],
+    "include_msvcr": False,
+    "optimize": 0,
+}
+
+
+executables = [
+    Executable(
+        script=str(ROOT / "comfy_portal.py"),
+        base="gui",
+        target_name="Comfy Portal.exe",
+        icon=str(ASSETS / "comfy_portal.ico"),
+    )
+]
+
+
+setup(
+    name="Comfy Portal",
+    version="1.0.0",
+    description="Mofko ComfyUI launcher and LocalTunnel manager",
+    options={"build_exe": build_exe_options},
+    executables=executables,
+)
+
+try:
+    generated_license = build_output_dir() / "frozen_application_license.txt"
+    if generated_license.exists():
+        generated_license.unlink()
+except Exception:
+    pass

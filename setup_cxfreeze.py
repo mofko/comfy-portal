@@ -37,6 +37,10 @@ build_exe_options = {
         "zipfile",
         "ctypes",
         "dataclasses",
+        # Python loads the filesystem codec before the application starts.
+        # Freeze every codec module; otherwise the frozen executable fails at
+        # startup with "failed to get the Python codec of the filesystem encoding".
+        "encodings",
         "functools",
         "pathlib",
         "psutil",
@@ -138,7 +142,7 @@ executables = [
 
 setup(
     name="Comfy Portal",
-    version="1.0.0",
+    version="1.0.7",
     description="Mofko ComfyUI launcher and LocalTunnel manager",
     options={"build_exe": build_exe_options},
     executables=executables,

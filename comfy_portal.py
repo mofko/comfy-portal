@@ -24,7 +24,7 @@ import uuid
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 try:
     import winreg
@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.7"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -104,8 +104,9 @@ TUNNEL_PROVIDERS = (TUNNEL_PROVIDER_LOCALTUNNEL,)
 LOCALTUNNEL_HOST = "https://localtunnel.me"
 LOCALTUNNEL_VPN_BYPASS_HOST = "localtunnel.me"
 LOCALTUNNEL_VPN_BYPASS_CACHE_TTL = 90.0
+LOCALTUNNEL_VPN_FALLBACK_TTL = 600.0
 LOCALTUNNEL_VPN_BYPASS_LOCK = threading.Lock()
-LOCALTUNNEL_VPN_BYPASS_CACHE = {"at": 0.0, "ips": ()}
+LOCALTUNNEL_VPN_BYPASS_CACHE = {"at": 0.0, "ips": (), "fallback_until": 0.0}
 MAX_FRIEND_LINKS = 5
 DISCOVER_COMFY_CACHE_TTL = 90.0
 DISCOVER_COMFY_BUDGET_SECONDS = 2.8
@@ -178,66 +179,42 @@ DEFAULT_EXTRA_LAUNCH_ARGS = ""
 REQUIRED_COMFY_ARGS: tuple[str, ...] = ()
 DISALLOWED_COMFY_ARGS = {"--log-stdout", "--disable-dynamic-vram"}
 MODEL_SIZE_HINTS = {
-    "SAM": 420 * 1024 * 1024,
-    "RealESRGAN x2": 70 * 1024 * 1024,
-    "Control LoRA Canny": 150 * 1024 * 1024,
-    "VAE": 340 * 1024 * 1024,
-    "CLIP / text_encoders": 8 * 1024 * 1024 * 1024,
-    "ControlNet Union": 3 * 1024 * 1024 * 1024,
-    "lazypos": 1 * 1024 * 1024,
-    "lazyneg": 1 * 1024 * 1024,
-    "Upscale 4x_NMKD-Siax_200k": 70 * 1024 * 1024,
-    "mopMixtureOfPerverts v20": 2 * 1024 * 1024 * 1024,
     "xxxRay DMD2": 2 * 1024 * 1024 * 1024,
-    "WAI-illustrious-SDXL": 2 * 1024 * 1024 * 1024,
-    "Intorealism ZIT v40": 12 * 1024 * 1024 * 1024,
-    "RedCraft ErnieRedmix UNet": 4 * 1024 * 1024 * 1024,
-    "RedCraft ErnieRedmix Text Encoder": 8 * 1024 * 1024 * 1024,
-    "Flux2 Tiny VAE": 350 * 1024 * 1024,
-    "MiaoMiao Harem Anima 11 UNet": 4 * 1024 * 1024 * 1024,
-    "MiaoMiao Harem Anima 11 Text Encoder": 2 * 1024 * 1024 * 1024,
-    "MiaoMiao Harem Anima 11 VAE": 300 * 1024 * 1024,
-    "bbox/face_yolov8m.pt": 60 * 1024 * 1024,
-    "bbox/face_yolov9c.pt": 50 * 1024 * 1024,
-    "bbox/Eyeful_v2-Paired.pt": 90 * 1024 * 1024,
-    "bbox/hand_yolov9c.pt": 50 * 1024 * 1024,
+    "MiaoMiao Harem": 6 * 1024 * 1024 * 1024,
+    "MiaoMiao Harem (Anime Coloring)": 6 * 1024 * 1024 * 1024,
+    "Krea 2 LUSTIFY": 8 * 1024 * 1024 * 1024,
+    "Nova Anime XL": 2 * 1024 * 1024 * 1024,
 }
 MODEL_CHOICE_SPECS = (
     {
-        "key": "mopofmixture",
-        "title": "mopMixtureOfPerverts v20",
-        "weight": "слабая",
-        "hint": "для слабых GPU",
-    },
-    {
-        "key": "xxray",
+        "key": "xxxraydmd2",
         "title": "xxxRay DMD2",
-        "weight": "слабая",
-        "hint": "для слабых GPU",
+        "weight": "Checkpoint",
+        "hint": "один файл в models/checkpoints",
     },
     {
-        "key": "waiill",
-        "title": "WAI-illustrious-SDXL",
-        "weight": "средняя",
-        "hint": "баланс качества и размера",
+        "key": "miaomiao_harem",
+        "title": "MiaoMiao Harem",
+        "weight": "UNET + Text Encoder",
+        "hint": "два обязательных компонента",
     },
     {
-        "key": "intorealism",
-        "title": "Intorealism ZIT v40",
-        "weight": "тяжелая",
-        "hint": "ставить только если хватает места и VRAM",
+        "key": "miaomiao_harem_anime_coloring",
+        "title": "MiaoMiao Harem (Anime Coloring)",
+        "weight": "UNET + Text Encoder",
+        "hint": "два обязательных компонента",
     },
     {
-        "key": "redcraft",
-        "title": "RedCraft ErnieRedmix",
-        "weight": "тяжелая",
-        "hint": "ставить только если хватает места и VRAM",
+        "key": "krea_2_lustify",
+        "title": "Krea 2 LUSTIFY",
+        "weight": "UNET + VAE + Text Encoder",
+        "hint": "три обязательных компонента",
     },
     {
-        "key": "miaomiao",
-        "title": "MiaoMiao Harem Anima 11",
-        "weight": "medium",
-        "hint": "Anima 11 model: UNet + text encoder + VAE",
+        "key": "nova_anime_xl",
+        "title": "Nova Anime XL",
+        "weight": "Checkpoint",
+        "hint": "один файл в models/checkpoints",
     },
 )
 DEFAULT_SELECTED_MODEL_CHOICES = tuple(choice["key"] for choice in MODEL_CHOICE_SPECS)
@@ -266,7 +243,7 @@ COMFY_LAUNCH_MODES = {
         "args": ["--windows-standalone-build", "--listen", "--cpu"],
     },
 }
-STARTER_MODEL_SPECS = (
+_REMOVED_STARTER_MODEL_SPECS = (
     {
         "title": "SAM",
         "filename": "sam_vit_b_01ec64.pth",
@@ -476,6 +453,129 @@ STARTER_MODEL_SPECS = (
         "relative_dir": ("ComfyUI", "models", "ultralytics", "bbox"),
     },
 )
+# The old download catalogue above is deliberately retained only for source-history
+# readability. It is not used by the installer or UI. New models are declared as
+# atomic bundles below; every component still uses the existing shared downloader.
+STARTER_MODEL_SPECS = (
+    {
+        "title": "xxxRay DMD2",
+        "bundle_id": "xxxraydmd2",
+        "bundle_title": "xxxRay DMD2",
+        "component": "Checkpoint",
+        "filename": "xxxRay_dmd2.safetensors",
+        "url": "https://civitai.red/api/download/models/1624818?type=Model&format=SafeTensor&size=full&fp=fp16",
+        "relative_dir": ("ComfyUI", "models", "checkpoints"),
+        "detect_names": ("xxxRay_dmd2.safetensors",),
+        "detect_contains_any": ("xxxray", "ray_dmd2", "dmd2", "1624818"),
+        "detect_extensions": (".safetensors", ".ckpt"),
+        "model_choice_key": "xxxraydmd2",
+    },
+    {
+        "title": "MiaoMiao Harem — UNET",
+        "bundle_id": "miaomiao_harem",
+        "bundle_title": "MiaoMiao Harem",
+        "component": "UNET",
+        "filename": "",
+        "url": "https://civitai.red/api/download/models/3248362?fileId=3131298",
+        "relative_dir": ("ComfyUI", "models", "unet"),
+        "detect_names": ("miaomiaoHarem_anima16.safetensors",),
+        "detect_contains_any": ("miaomiaoharem_anima16",),
+        "detect_extensions": (".safetensors",),
+        "model_choice_key": "miaomiao_harem",
+        "filename_from_response": True,
+    },
+    {
+        "title": "MiaoMiao Harem — Text Encoder",
+        "bundle_id": "miaomiao_harem",
+        "bundle_title": "MiaoMiao Harem",
+        "component": "Text Encoder",
+        "filename": "",
+        "url": "https://civitai.red/api/download/models/3248362?fileId=3131293",
+        "relative_dir": ("ComfyUI", "models", "text_encoders"),
+        "detect_names": ("miaomiaoHarem_anima16_txt.safetensors",),
+        "detect_contains_any": ("miaomiaoharem_anima16_txt",),
+        "detect_extensions": (".safetensors",),
+        "model_choice_key": "miaomiao_harem",
+        "filename_from_response": True,
+    },
+    {
+        "title": "MiaoMiao Harem (Anime Coloring) — UNET",
+        "bundle_id": "miaomiao_harem_anime_coloring",
+        "bundle_title": "MiaoMiao Harem (Anime Coloring)",
+        "component": "UNET",
+        "filename": "",
+        "url": "https://civitai.red/api/download/models/3203207?fileId=3084585",
+        "relative_dir": ("ComfyUI", "models", "unet"),
+        "detect_names": ("miaomiaoHarem_aniAnimeColoring10.safetensors",),
+        "detect_contains_any": ("miaomiaoharem_anianimecoloring10",),
+        "detect_extensions": (".safetensors",),
+        "model_choice_key": "miaomiao_harem_anime_coloring",
+        "filename_from_response": True,
+    },
+    {
+        "title": "MiaoMiao Harem (Anime Coloring) — Text Encoder",
+        "bundle_id": "miaomiao_harem_anime_coloring",
+        "bundle_title": "MiaoMiao Harem (Anime Coloring)",
+        "component": "Text Encoder",
+        "filename": "",
+        "url": "https://civitai.red/api/download/models/3203207?fileId=3084578",
+        "relative_dir": ("ComfyUI", "models", "text_encoders"),
+        "detect_names": ("miaomiaoHarem_aniAnimeColoring10_txt.safetensors",),
+        "detect_contains_any": ("miaomiaoharem_anianimecoloring10_txt",),
+        "detect_extensions": (".safetensors",),
+        "model_choice_key": "miaomiao_harem_anime_coloring",
+        "filename_from_response": True,
+    },
+    {
+        "title": "Krea 2 LUSTIFY — UNET",
+        "bundle_id": "krea_2_lustify",
+        "bundle_title": "Krea 2 LUSTIFY",
+        "component": "UNET",
+        "filename": "",
+        "url": "https://civitai.red/api/download/models/3112728?fileId=3002352",
+        "relative_dir": ("ComfyUI", "models", "unet"),
+        "detect_contains_any": ("krea", "lustify"),
+        # Krea is commonly distributed as a GGUF UNET. Keep safetensors
+        # support for future variants, but do not mark an existing GGUF file
+        # as missing.
+        "detect_extensions": (".safetensors", ".gguf"),
+        "model_choice_key": "krea_2_lustify",
+        "filename_from_response": True,
+    },
+    {
+        "title": "Krea 2 LUSTIFY — VAE",
+        "bundle_id": "krea_2_lustify",
+        "bundle_title": "Krea 2 LUSTIFY",
+        "component": "VAE",
+        "filename": "wan_2.1_vae.safetensors",
+        "url": "https://huggingface.co/OreX/Models/resolve/main/WAN/wan_2.1_vae.safetensors",
+        "relative_dir": ("ComfyUI", "models", "vae"),
+        "model_choice_key": "krea_2_lustify",
+    },
+    {
+        "title": "Krea 2 LUSTIFY — Text Encoder",
+        "bundle_id": "krea_2_lustify",
+        "bundle_title": "Krea 2 LUSTIFY",
+        "component": "Text Encoder",
+        "filename": "qwen3vl_4b_fp8_scaled.safetensors",
+        "url": "https://huggingface.co/Comfy-Org/Qwen3-VL/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+        "relative_dir": ("ComfyUI", "models", "text_encoders"),
+        "model_choice_key": "krea_2_lustify",
+    },
+    {
+        "title": "Nova Anime XL — Checkpoint",
+        "bundle_id": "nova_anime_xl",
+        "bundle_title": "Nova Anime XL",
+        "component": "Checkpoint",
+        "filename": "",
+        "url": "https://civitai.red/api/download/models/2940478?fileId=2819621",
+        "relative_dir": ("ComfyUI", "models", "checkpoints"),
+        "detect_contains_any": ("nova", "anime"),
+        "detect_extensions": (".safetensors", ".ckpt"),
+        "model_choice_key": "nova_anime_xl",
+        "filename_from_response": True,
+    },
+)
 REQUIRED_NODE_SPECS = (
     {
         "title": "ComfyUI Impact Pack",
@@ -513,12 +613,6 @@ REQUIRED_NODE_SPECS = (
         "cnr_id": "comfyui-impact-subpack",
         "folder": "ComfyUI-Impact-Subpack",
         "repo": "https://github.com/ltdrdata/ComfyUI-Impact-Subpack.git",
-    },
-    {
-        "title": "ComfyUI_Swwan",
-        "cnr_id": "aining2022/ComfyUI_Swwan",
-        "folder": "ComfyUI_Swwan",
-        "repo": "https://github.com/aining2022/ComfyUI_Swwan.git",
     },
     {
         "title": "CG Use Everywhere",
@@ -1109,7 +1203,17 @@ def localtunnel_bypass_ready(addresses: tuple[str, ...], network: dict) -> bool:
     return bool(payload.get("ready"))
 
 
-def apply_localtunnel_vpn_bypass(addresses: tuple[str, ...], previous_addresses: tuple[str, ...]) -> None:
+def localtunnel_direct_tcp_ready(addresses: tuple[str, ...], timeout: float = 5.0) -> bool:
+    for address in addresses:
+        try:
+            with socket.create_connection((address, 443), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def apply_localtunnel_vpn_bypass(addresses: tuple[str, ...], previous_addresses: tuple[str, ...]) -> bool:
     if os.name != "nt":
         return
     network = localtunnel_direct_network()
@@ -1139,6 +1243,21 @@ function Write-BypassResult($status, $detail) {{
         ConvertTo-Json -Compress |
         Set-Content -LiteralPath $resultPath -Encoding utf8
 }}
+function Test-DirectConnection {{
+    foreach ($target in $activeTargets) {{
+        $client = [System.Net.Sockets.TcpClient]::new()
+        try {{
+            $connect = $client.BeginConnect($target, 443, $null, $null)
+            if ($connect.AsyncWaitHandle.WaitOne(6000) -and $client.Connected) {{
+                $client.EndConnect($connect)
+                return $true
+            }}
+        }}
+        catch {{}}
+        finally {{ $client.Dispose() }}
+    }}
+    return $false
+}}
 Write-BypassResult 'started' ''
 try {{
     foreach ($target in $allTargets) {{
@@ -1149,6 +1268,15 @@ try {{
     foreach ($target in $activeTargets) {{
         & "$env:SystemRoot\\System32\\route.exe" -p add $target mask 255.255.255.255 $gateway metric 5 if $interfaceIndex | Out-Null
         if ($LASTEXITCODE -ne 0) {{ throw "route.exe не смог добавить постоянный маршрут для $target" }}
+    }}
+    if (-not (Test-DirectConnection)) {{
+        foreach ($target in $activeTargets) {{
+            $prefix = "$target/32"
+            Get-NetRoute -PolicyStore ActiveStore -DestinationPrefix $prefix -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+            & "$env:SystemRoot\\System32\\route.exe" -p delete $target | Out-Null
+        }}
+        Write-BypassResult 'fallback' 'Прямое TCP-подключение к LocalTunnel недоступно; маршрут удалён, используется VPN.'
+        exit 0
     }}
     Write-BypassResult 'ok' ''
 }}
@@ -1171,7 +1299,9 @@ catch {{
                 result = json.loads(result_path.read_text(encoding="utf-8-sig"))
                 status = str(result.get("status") or "")
                 if status == "ok":
-                    return
+                    return True
+                if status == "fallback":
+                    return False
                 if status == "error":
                     detail = str(result.get("detail") or "неизвестная ошибка Windows")
                     raise RuntimeError(f"Windows не создала маршрут LocalTunnel: {detail}")
@@ -1181,29 +1311,48 @@ catch {{
     raise RuntimeError("Windows не успела настроить маршрут LocalTunnel. Попробуйте запустить туннель ещё раз.")
 
 
-def ensure_localtunnel_vpn_bypass() -> None:
+def ensure_localtunnel_vpn_bypass() -> bool:
     if os.name != "nt":
-        return
+        return True
     config = load_config()
     if not config.get("localtunnel_vpn_bypass", True):
-        return
-    addresses = localtunnel_ipv4_addresses()
+        return False
     now = time.monotonic()
+    try:
+        addresses = localtunnel_ipv4_addresses()
+    except RuntimeError as exc:
+        write_portal_log("localtunnel.vpn_bypass.fallback", reason=str(exc))
+        return False
     with LOCALTUNNEL_VPN_BYPASS_LOCK:
         cached_addresses = tuple(LOCALTUNNEL_VPN_BYPASS_CACHE.get("ips") or ())
+        if cached_addresses == addresses and now < float(LOCALTUNNEL_VPN_BYPASS_CACHE.get("fallback_until", 0.0)):
+            return False
         if cached_addresses == addresses and now - float(LOCALTUNNEL_VPN_BYPASS_CACHE.get("at", 0.0)) < LOCALTUNNEL_VPN_BYPASS_CACHE_TTL:
-            return
-        network = localtunnel_direct_network()
-        if not localtunnel_bypass_ready(addresses, network):
+            return True
+        try:
+            network = localtunnel_direct_network()
+            route_ready = localtunnel_bypass_ready(addresses, network)
+            if route_ready and localtunnel_direct_tcp_ready(addresses):
+                LOCALTUNNEL_VPN_BYPASS_CACHE.update({"at": now, "ips": addresses, "fallback_until": 0.0})
+                return True
             previous = tuple(str(value) for value in config.get("localtunnel_vpn_bypass_ips", []) if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", str(value)))
-            apply_localtunnel_vpn_bypass(addresses, previous)
+            route_ready = apply_localtunnel_vpn_bypass(addresses, previous)
+            if not route_ready:
+                LOCALTUNNEL_VPN_BYPASS_CACHE.update({"at": now, "ips": addresses, "fallback_until": now + LOCALTUNNEL_VPN_FALLBACK_TTL})
+                write_portal_log("localtunnel.vpn_bypass.fallback", host=LOCALTUNNEL_VPN_BYPASS_HOST, addresses=";".join(addresses), reason="direct_tcp_unavailable")
+                return False
             network = localtunnel_direct_network()
             if not localtunnel_bypass_ready(addresses, network):
                 raise RuntimeError("Не удалось подтвердить прямой маршрут LocalTunnel после настройки Windows.")
             config["localtunnel_vpn_bypass_ips"] = list(addresses)
             save_config(config)
             write_portal_log("localtunnel.vpn_bypass.ready", host=LOCALTUNNEL_VPN_BYPASS_HOST, addresses=";".join(addresses), gateway=network.get("gateway"))
-        LOCALTUNNEL_VPN_BYPASS_CACHE.update({"at": now, "ips": addresses})
+            LOCALTUNNEL_VPN_BYPASS_CACHE.update({"at": now, "ips": addresses, "fallback_until": 0.0})
+            return True
+        except RuntimeError as exc:
+            LOCALTUNNEL_VPN_BYPASS_CACHE.update({"at": now, "ips": addresses, "fallback_until": now + LOCALTUNNEL_VPN_FALLBACK_TTL})
+            write_portal_log("localtunnel.vpn_bypass.fallback", host=LOCALTUNNEL_VPN_BYPASS_HOST, addresses=";".join(addresses), reason=str(exc))
+            return False
 
 
 NETWORK_ERROR_HINTS = (
@@ -1321,13 +1470,14 @@ def default_config(check_subdomain_availability: bool = False) -> dict:
         "comfy_root": "",
         "civitai_api_keys_b64": [],
         "selected_model_choices": list(DEFAULT_SELECTED_MODEL_CHOICES),
+        "model_download_filenames": {},
     }
 
 
 def normalize_selected_model_choices(value: object) -> list[str]:
     valid_order = [str(choice["key"]) for choice in MODEL_CHOICE_SPECS]
     valid = set(valid_order)
-    legacy_map = {"novaanime": "waiill"}
+    legacy_map = {"xxray": "xxxraydmd2", "novaanime": "nova_anime_xl"}
     if value is None:
         raw_items = list(DEFAULT_SELECTED_MODEL_CHOICES)
     elif isinstance(value, str):
@@ -1356,6 +1506,32 @@ def model_spec_is_selected(spec: dict, selected_keys: set[str]) -> bool:
 def selectable_starter_model_specs(config: dict | None = None) -> list[dict]:
     selected_keys = selected_model_choice_keys(config)
     return [spec for spec in STARTER_MODEL_SPECS if model_spec_is_selected(spec, selected_keys)]
+
+
+def starter_model_bundles() -> list[dict]:
+    """Return the catalog as user-facing atomic models, preserving component specs."""
+    bundles: dict[str, dict] = {}
+    for spec in STARTER_MODEL_SPECS:
+        bundle_id = str(spec.get("bundle_id") or spec.get("model_choice_key") or spec["title"])
+        bundle = bundles.setdefault(
+            bundle_id,
+            {
+                "id": bundle_id,
+                "title": str(spec.get("bundle_title") or spec["title"]),
+                "choice_key": str(spec.get("model_choice_key") or ""),
+                "components": [],
+            },
+        )
+        bundle["components"].append(spec)
+    return list(bundles.values())
+
+
+def starter_model_bundle_by_title(value: str) -> dict | None:
+    clean = str(value or "").strip().lower()
+    for bundle in starter_model_bundles():
+        if clean in {str(bundle["id"]).lower(), str(bundle["title"]).lower()}:
+            return bundle
+    return None
 
 
 def default_state() -> dict:
@@ -2840,8 +3016,20 @@ def starter_model_target_dir(root: Path, spec: dict) -> Path:
     return root.joinpath(*spec["relative_dir"])
 
 
+def configured_model_filename(spec: dict, config: dict | None = None) -> str:
+    filename = str(spec.get("filename", "") or "").strip()
+    if filename:
+        return filename
+    config = config or load_config()
+    filenames = config.get("model_download_filenames", {})
+    if isinstance(filenames, dict):
+        return str(filenames.get(str(spec.get("url", "")), "") or "").strip()
+    return ""
+
+
 def starter_model_target_path(root: Path, spec: dict) -> Path:
-    return starter_model_target_dir(root, spec) / str(spec.get("filename", "")).strip()
+    filename = configured_model_filename(spec)
+    return starter_model_target_dir(root, spec) / filename if filename else starter_model_target_dir(root, spec)
 
 
 def is_nonempty_file(path: Path) -> bool:
@@ -3088,37 +3276,56 @@ def comfy_setup_status(config: dict | None = None) -> dict:
     model_states = []
     selected_keys = selected_model_choice_keys(config)
     choice_by_key = {str(choice["key"]): choice for choice in MODEL_CHOICE_SPECS}
-    for spec in STARTER_MODEL_SPECS:
-        target = starter_model_target_path(root, spec) if root else None
-        target_dir = starter_model_target_dir(root, spec) if root else None
-        ready = starter_model_exists(root, spec)
-        choice_key = str(spec.get("model_choice_key", "") or "").strip()
-        selected = model_spec_is_selected(spec, selected_keys)
-        skipped = bool(choice_key and not selected and not ready)
-        ready_for_status = ready
-        if skipped:
-            ready = True
-        link_status = {"available": True, "message": "Ссылка доступна."} if ready else cached_direct_download_status(spec)
-        if skipped:
-            link_status = {"available": True, "message": "Skipped by model selection.", "checked": True}
+    for bundle in starter_model_bundles():
+        components: list[dict] = []
+        installed_count = 0
+        unavailable_messages: list[str] = []
+        checked = True
+        for spec in bundle["components"]:
+            target = starter_model_target_path(root, spec) if root else None
+            target_dir = starter_model_target_dir(root, spec) if root else None
+            ready = starter_model_exists(root, spec)
+            installed_count += int(ready)
+            link_status = {"available": True, "message": "Ссылка доступна.", "checked": True} if ready else cached_direct_download_status(spec)
+            checked = checked and bool(link_status.get("checked", False))
+            if not link_status.get("available", True):
+                unavailable_messages.append(str(link_status.get("message", "") or "Ссылка недоступна."))
+            components.append(
+                {
+                    "title": str(spec["title"]),
+                    "component": str(spec.get("component") or "Файл"),
+                    "filename": configured_model_filename(spec),
+                    "path": str(target) if target else "",
+                    "directory": str(target_dir) if target_dir else "",
+                    "relative_dir": str(Path(*spec.get("relative_dir", ()))),
+                    "url": str(spec.get("url", "")),
+                    "ready": ready,
+                }
+            )
+        choice_key = str(bundle.get("choice_key") or "")
+        selected = not choice_key or choice_key in selected_keys
+        ready = installed_count == len(components)
+        partial = bool(installed_count and not ready)
+        skipped = bool(not selected and not ready)
         choice = choice_by_key.get(choice_key, {})
         model_states.append(
             {
-                "title": spec["title"],
-                "filename": str(spec.get("filename", "") or ""),
-                "path": str(target) if target else "",
-                "directory": str(target_dir) if target_dir else "",
-                "relative_dir": str(Path(*spec.get("relative_dir", ()))),
-                "url": str(spec.get("url", "")),
-                "ready": ready_for_status,
+                "title": str(bundle["title"]),
+                "components": components,
+                "component_count": len(components),
+                "installed_count": installed_count,
+                "installed_components": [item["component"] for item in components if item["ready"]],
+                "missing_components": [item["component"] for item in components if not item["ready"]],
+                "ready": ready,
+                "partial": partial,
                 "selected": selected,
                 "skipped": skipped,
                 "choice_key": choice_key,
                 "choice_label": str(choice.get("title", "") or ""),
                 "choice_weight": str(choice.get("weight", "") or ""),
-                "download_available": bool(link_status.get("available", False)),
-                "download_message": str(link_status.get("message", "") or ""),
-                "download_checked": bool(link_status.get("checked", False)),
+                "download_available": not unavailable_messages,
+                "download_message": " ".join(unavailable_messages),
+                "download_checked": checked,
             }
         )
     return {
@@ -4026,6 +4233,46 @@ def check_download_control(status_cb=None) -> None:
         time.sleep(0.25)
 
 
+def content_disposition_filename(value: str | None) -> str:
+    """Extract a safe server-provided filename without inventing a Civitai name."""
+    header = str(value or "")
+    match = re.search(r"filename\*=UTF-8''([^;]+)", header, flags=re.IGNORECASE)
+    if match:
+        candidate = unquote(match.group(1)).strip().strip('"')
+    else:
+        match = re.search(r'filename\s*=\s*(?:"([^"]+)"|([^;]+))', header, flags=re.IGNORECASE)
+        candidate = (match.group(1) or match.group(2)).strip() if match else ""
+    filename = Path(candidate).name.strip()
+    if not filename or filename in {".", ".."} or any(char in filename for char in "\\/\x00"):
+        return ""
+    return filename
+
+
+def resolve_starter_model_filename(spec: dict, config: dict | None = None) -> str:
+    """Resolve Civitai filenames at install time from redirect/Content-Disposition."""
+    filename = configured_model_filename(spec, config)
+    if filename:
+        return filename
+    if not spec.get("filename_from_response"):
+        raise RuntimeError(f"Для {spec['title']} не задано имя файла.")
+    config = config or load_config()
+    for url, headers, _ in starter_model_requests(spec, config):
+        request_headers = {"User-Agent": DOWNLOAD_USER_AGENT, **headers}
+        request = urllib.request.Request(url, headers=request_headers)
+        try:
+            with urllib.request.urlopen(request, timeout=DOWNLOAD_LINK_TIMEOUT) as response:
+                filename = content_disposition_filename(response.headers.get("Content-Disposition"))
+                if filename:
+                    filenames = config.setdefault("model_download_filenames", {})
+                    if isinstance(filenames, dict):
+                        filenames[str(spec["url"])] = filename
+                        save_config(config)
+                    return filename
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+            continue
+    raise RuntimeError(f"Не удалось получить имя файла от сервера для {spec['title']}.")
+
+
 def download_file(url: str, destination: Path, progress_cb=None, status_cb=None, request_headers: dict[str, str] | None = None) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_path = destination.with_suffix(destination.suffix + ".part")
@@ -4694,10 +4941,17 @@ def install_starter_models(root: Path, progress=None, specs: list[dict] | tuple[
     total_count = len(pending_specs)
     config = load_config()
     for index, spec in enumerate(pending_specs, start=1):
-        row_key = f"model:{spec['title']}"
+        row_key = f"model:{spec.get('bundle_title') or spec['title']}"
         target_dir = root.joinpath(*spec["relative_dir"])
         target_dir.mkdir(parents=True, exist_ok=True)
-        target_filename = str(spec.get("filename", "")).strip()
+        try:
+            target_filename = resolve_starter_model_filename(spec, config)
+        except RuntimeError as exc:
+            message = f"{spec['title']}: {exc}"
+            results.append(message)
+            if progress:
+                progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, "Не удалось определить имя файла"))
+            continue
         target_path = target_dir / target_filename
         if target_path.exists() and target_path.stat().st_size > 0:
             results.append(f"{spec['title']} уже был на месте")
@@ -4795,8 +5049,8 @@ def install_single_starter_model_setup(model_title: str, progress=None) -> str:
     root = current_comfy_root()
     if not root:
         raise RuntimeError("Сначала нужна установленная portable-папка ComfyUI.")
-    spec = starter_model_spec_by_title(model_title)
-    if not spec:
+    bundle = starter_model_bundle_by_title(model_title)
+    if not bundle:
         raise RuntimeError(f"Модель не найдена в списке установки: {model_title}")
 
     def emit(fraction: float, detail: str, meta: str = "") -> None:
@@ -4805,21 +5059,22 @@ def install_single_starter_model_setup(model_title: str, progress=None) -> str:
         percent = int(max(0, min(100, round(float(fraction) * 100))))
         progress(detail, percent, meta)
 
-    if starter_model_exists(root, spec):
+    components = list(bundle["components"])
+    if all(starter_model_exists(root, spec) for spec in components):
         if progress:
             progress(
-                f"{spec['title']} уже на месте",
+                f"{bundle['title']} уже на месте",
                 100,
-                build_setup_progress_meta(f"model:{spec['title']}", "done", 100, "Файл уже установлен"),
+                build_setup_progress_meta(f"model:{bundle['title']}", "done", 100, "Все компоненты уже установлены"),
             )
-        return f"{spec['title']} уже установлена."
+        return f"{bundle['title']} уже установлена."
 
-    results = install_starter_models(root, progress=emit, specs=[spec])
+    results = install_starter_models(root, progress=emit, specs=components)
     invalidate_setup_status_cache()
-    if not starter_model_exists(root, spec):
+    if not all(starter_model_exists(root, spec) for spec in components):
         detail = " ".join(results).strip() or "файл не найден после установки"
-        raise RuntimeError(f"{spec['title']} не установлена: {detail}")
-    return f"{spec['title']} установлена."
+        raise RuntimeError(f"{bundle['title']} установлена не полностью: {detail}")
+    return f"{bundle['title']} установлена."
 
 
 def install_manager_setup(progress=None) -> str:
@@ -7445,6 +7700,10 @@ class Theme:
     blue_hover: str
     soft_btn: str
     soft_btn_hover: str
+    surface_container: str
+    surface_container_high: str
+    outline_variant: str
+    focus: str
     shadow: QColor
 
 
@@ -7464,6 +7723,10 @@ THEMES = {
         blue_hover="#185abc",
         soft_btn="#e8f0fe",
         soft_btn_hover="#d2e3fc",
+        surface_container="rgba(248, 250, 255, 236)",
+        surface_container_high="rgba(232, 240, 254, 238)",
+        outline_variant="rgba(26, 115, 232, 78)",
+        focus="rgba(26, 115, 232, 168)",
         shadow=QColor(60, 64, 67, 28),
     ),
     "dark": Theme(
@@ -7481,9 +7744,92 @@ THEMES = {
         blue_hover="#3c8df6",
         soft_btn="#202938",
         soft_btn_hover="#2b3648",
+        surface_container="rgba(18, 23, 33, 238)",
+        surface_container_high="rgba(32, 41, 56, 236)",
+        outline_variant="rgba(60, 141, 246, 104)",
+        focus="rgba(60, 141, 246, 178)",
         shadow=QColor(0, 0, 0, 120),
     ),
 }
+
+
+def material3_control_styles(theme: Theme) -> str:
+    """Shared desktop Material 3 control language for every screen and dialog."""
+    return f"""
+        QPushButton {{
+            min-height: 36px;
+            padding: 0px 16px;
+            border: 1px solid {theme.border};
+            border-radius: 18px;
+            background: {theme.soft_btn};
+            color: {theme.text};
+            font-size: 13px;
+            font-weight: 700;
+        }}
+        QPushButton:hover {{
+            background: {theme.soft_btn_hover};
+            border-color: {theme.outline_variant};
+        }}
+        QPushButton:pressed {{
+            background: {theme.surface_container_high};
+        }}
+        QPushButton:focus, QLineEdit:focus, QPlainTextEdit:focus, QCheckBox:focus {{
+            border: 2px solid {theme.focus};
+        }}
+        QPushButton:disabled {{
+            background: {theme.panel_alt};
+            color: {theme.muted};
+            border-color: {theme.border};
+        }}
+        QLineEdit, QPlainTextEdit {{
+            background: {theme.surface_container};
+            color: {theme.text};
+            border: 1px solid {theme.border};
+            border-radius: 12px;
+            padding: 9px 12px;
+            selection-background-color: {theme.blue};
+            selection-color: white;
+        }}
+        QLineEdit:disabled, QPlainTextEdit:disabled {{
+            background: {theme.panel_alt};
+            color: {theme.muted};
+        }}
+        QCheckBox {{
+            color: {theme.text};
+            spacing: 8px;
+            font-size: 13px;
+        }}
+        QCheckBox::indicator {{
+            width: 18px;
+            height: 18px;
+            border: 2px solid {theme.muted};
+            border-radius: 5px;
+            background: {theme.surface_container};
+        }}
+        QCheckBox::indicator:hover {{
+            border-color: {theme.blue};
+        }}
+        QCheckBox::indicator:checked {{
+            background: {theme.blue};
+            border-color: {theme.blue};
+        }}
+        QProgressBar {{
+            background: {theme.surface_container_high};
+            border: none;
+            border-radius: 999px;
+        }}
+        QProgressBar::chunk {{
+            background: {theme.blue};
+            border-radius: 999px;
+        }}
+        QToolTip {{
+            background: {theme.surface_container_high};
+            color: {theme.text};
+            border: 1px solid {theme.border};
+            border-radius: 8px;
+            padding: 6px 8px;
+        }}
+    """
 
 
 class UiBridge(QObject):
@@ -7503,7 +7849,6 @@ class CardFrame(QFrame):
         super().__init__()
         self.setObjectName(object_name)
         self.setFrameShape(QFrame.NoFrame)
-        self.shadow = None
 
 
 class StatusCard(CardFrame):
@@ -7923,7 +8268,7 @@ class FriendSubdomainDialog(QDialog):
 
     def apply_theme(self) -> None:
         self.setStyleSheet(
-            f"""
+            material3_control_styles(self.theme) + f"""
             QDialog {{
                 background: {self.theme.panel_bg};
                 color: {self.theme.text};
@@ -8109,7 +8454,7 @@ class ComfyGuideDialog(QDialog):
         what_text = QLabel(
             "1. Если portable ComfyUI не найден, приложение попросит папку и само скачает portable-архив.\n"
             "2. Только после этого поставит ComfyUI Manager в ComfyUI/custom_nodes/comfyui-manager.\n"
-            "3. Затем доложит SAM, RealESRGAN x2, Control LoRA Canny и основную image-модель прямо в нужные model-папки.\n"
+            "3. Затем скачает выбранные модели и все их обязательные компоненты прямо в нужные model-папки.\n"
             "4. В конце доставит недостающие ноды для воркфлоу в custom_nodes."
         )
         what_text.setObjectName("guideSectionBody")
@@ -8126,10 +8471,10 @@ class ComfyGuideDialog(QDialog):
         paths_title = QLabel("Куда лягут файлы")
         paths_title.setObjectName("guideSectionTitle")
         paths_text = QLabel(
-            "SAM -> ComfyUI/models/sams\n"
-            "RealESRGAN -> ComfyUI/models/upscale_models\n"
-            "Control LoRA Canny -> ComfyUI/models/controlnet\n"
-            "WAI-illustrious-SDXL -> ComfyUI/models/checkpoints"
+            "UNET -> ComfyUI/models/unet\n"
+            "Text Encoder -> ComfyUI/models/text_encoders\n"
+            "VAE -> ComfyUI/models/vae\n"
+            "Checkpoint -> ComfyUI/models/checkpoints"
         )
         paths_text.setObjectName("guideSectionBody")
         paths_text.setWordWrap(True)
@@ -8486,7 +8831,7 @@ class ComfyGuideDialog(QDialog):
 
     def apply_theme(self) -> None:
         self.setStyleSheet(
-            f"""
+            material3_control_styles(self.theme) + f"""
             QDialog {{
                 background: {self.theme.panel_bg};
                 color: {self.theme.text};
@@ -8703,11 +9048,11 @@ class SetupStatusRow(QFrame):
     def apply_theme(self, theme: Theme) -> None:
         self.theme = theme
         self.setStyleSheet(
-            f"""
+            material3_control_styles(theme) + f"""
             QFrame#setupStatusRow {{
-                background: {theme.surface};
+                background: {theme.surface_container};
                 border: 1px solid {theme.border};
-                border-radius: 22px;
+                border-radius: 16px;
             }}
             QLabel#setupRowTitle {{
                 color: {theme.text};
@@ -8719,10 +9064,10 @@ class SetupStatusRow(QFrame):
                 font-size: 12px;
             }}
             QLineEdit#setupRowCopyText {{
-                background: {theme.panel_alt};
+                background: {theme.surface_container_high};
                 color: {theme.text};
                 border: 1px solid {theme.border};
-                border-radius: 10px;
+                border-radius: 8px;
                 padding: 5px 8px;
                 font-size: 12px;
                 selection-background-color: {theme.blue};
@@ -8996,11 +9341,11 @@ class SetupSectionCard(QFrame):
     def apply_theme(self, theme: Theme) -> None:
         self.theme = theme
         self.setStyleSheet(
-            f"""
+            material3_control_styles(theme) + f"""
             QFrame#setupSectionCard {{
-                background: {theme.panel_alt};
+                background: {theme.surface_container_high};
                 border: 1px solid {theme.border};
-                border-radius: 26px;
+                border-radius: 20px;
             }}
             QPushButton#setupChevronButton {{
                 background: {theme.soft_btn};
@@ -9088,7 +9433,7 @@ class LaunchChoiceDialog(QDialog):
         layout.addStretch(1)
         layout.addLayout(buttons)
         self.setStyleSheet(
-            f"""
+            material3_control_styles(theme) + f"""
             QDialog {{
                 background: {theme.panel_bg};
                 color: {theme.text};
@@ -9247,30 +9592,66 @@ class ComfySetupPage(QWidget):
 
         self.model_choice_card = QFrame()
         self.model_choice_card.setObjectName("setupModelChoiceCard")
+        self.model_choice_rows: dict[str, QFrame] = {}
+        self.model_choice_states: dict[str, QLabel] = {}
+        self.model_choice_buttons: dict[str, QPushButton] = {}
+        self.model_choice_install_states: dict[str, dict] = {}
         model_choice_layout = QVBoxLayout(self.model_choice_card)
-        model_choice_layout.setContentsMargins(16, 14, 16, 14)
-        model_choice_layout.setSpacing(10)
-        self.model_choice_title = QLabel("Выбор моделей")
+        model_choice_layout.setContentsMargins(20, 18, 20, 18)
+        model_choice_layout.setSpacing(12)
+        self.model_choice_title = QLabel("Модели для установки")
         self.model_choice_title.setObjectName("setupModelChoiceTitle")
         self.model_choice_hint = QLabel(
-            "mopMixtureOfPerverts v20 и xxxRay DMD2 - слабые модели. "
-            "WAI-illustrious-SDXL - средняя. Intorealism ZIT v40 и RedCraft ErnieRedmix - тяжелые; "
-            "ставь их только если хватает места на диске и VRAM."
+            "Шаг 1 из 2 — выберите модели, которые нужно скачать. Одна кнопка добавляет все обязательные компоненты модели."
         )
         self.model_choice_hint.setObjectName("setupModelChoiceHint")
         self.model_choice_hint.setWordWrap(True)
+        self.model_choice_summary = QLabel()
+        self.model_choice_summary.setObjectName("setupModelChoiceSummary")
         model_choice_layout.addWidget(self.model_choice_title)
         model_choice_layout.addWidget(self.model_choice_hint)
+        model_choice_layout.addWidget(self.model_choice_summary)
         selected_choices = set(normalize_selected_model_choices(status.get("selected_model_choices")))
         for choice in MODEL_CHOICE_SPECS:
             key = str(choice["key"])
-            checkbox = QCheckBox(f"{choice['title']} - {choice['weight']}")
-            checkbox.setObjectName("setupModelChoiceCheck")
-            checkbox.setCursor(Qt.PointingHandCursor)
+            bundle = starter_model_bundle_by_title(key) or {"components": []}
+            choice_row = QFrame()
+            choice_row.setObjectName("setupModelChoiceRow")
+            choice_row.setProperty("selected", "false")
+            choice_row_layout = QVBoxLayout(choice_row)
+            choice_row_layout.setContentsMargins(16, 14, 16, 14)
+            choice_row_layout.setSpacing(6)
+            heading_layout = QHBoxLayout()
+            heading_layout.setSpacing(10)
+            title = QLabel(str(choice["title"]))
+            title.setObjectName("setupModelChoiceName")
+            checkbox = QCheckBox(choice_row)
+            checkbox.setVisible(False)
             checkbox.setChecked(key in selected_choices)
-            checkbox.toggled.connect(self.on_model_choice_toggled)
+            checkbox.toggled.connect(lambda checked, model_key=key: self.on_model_choice_toggled(model_key, checked))
             self.model_choice_checks[key] = checkbox
-            model_choice_layout.addWidget(checkbox)
+            selected_state = QLabel()
+            selected_state.setObjectName("setupModelChoiceState")
+            self.model_choice_rows[key] = choice_row
+            self.model_choice_states[key] = selected_state
+            heading_layout.addWidget(title, 1)
+            heading_layout.addWidget(selected_state, 0, Qt.AlignRight | Qt.AlignVCenter)
+            meta = QLabel(f"{choice['weight']} · {len(bundle['components'])} обязательных компонента")
+            meta.setObjectName("setupModelChoiceMeta")
+            components = QLabel("\n".join(f"{spec.get('component', 'Файл')} → {Path(*spec['relative_dir']).as_posix()}" for spec in bundle["components"]))
+            components.setObjectName("setupModelChoiceComponents")
+            components.setWordWrap(True)
+            choice_row_layout.addLayout(heading_layout)
+            choice_row_layout.addWidget(meta)
+            choice_row_layout.addWidget(components)
+            select_button = QPushButton()
+            select_button.setObjectName("setupModelChoiceAction")
+            select_button.setCursor(Qt.PointingHandCursor)
+            select_button.setFixedHeight(36)
+            select_button.clicked.connect(checkbox.toggle)
+            self.model_choice_buttons[key] = select_button
+            choice_row_layout.addWidget(select_button, 0, Qt.AlignLeft)
+            model_choice_layout.addWidget(choice_row)
 
         self.comfy_section = SetupSectionCard("comfy", "Comfy", "Установить всё", theme)
         self.nodes_section = SetupSectionCard("nodes", "Ноды", "Установить ноды", theme)
@@ -9292,8 +9673,12 @@ class ComfySetupPage(QWidget):
         for model in status.get("models", []):
             key = f"model:{model['title']}"
             row = SetupStatusRow(model["title"], theme)
-            row.set_link(str(model.get("url", "")))
-            row.set_copy_fields(str(model.get("filename", "")), str(model.get("path", "")))
+            components = list(model.get("components", []))
+            row.set_link(str(components[0].get("url", "")) if components else "")
+            row.set_copy_fields(
+                f"{model.get('component_count', 0)} обязательных файла",
+                " · ".join(str(component.get("relative_dir", "")) for component in components),
+            )
             row.set_install_action(str(model.get("title", "")))
             row.install_requested.connect(self.model_install_requested.emit)
             self.status_rows[key] = row
@@ -9320,7 +9705,7 @@ class ComfySetupPage(QWidget):
 
     def apply_theme(self) -> None:
         self.setStyleSheet(
-            f"""
+            material3_control_styles(self.theme) + f"""
             QWidget {{
                 background: transparent;
             }}
@@ -9331,15 +9716,15 @@ class ComfySetupPage(QWidget):
             QLabel#guidePathText {{
                 font-size: 13px;
                 color: {self.theme.text};
-                background: {self.theme.panel_bg};
+                background: {self.theme.surface_container};
                 border: 1px solid {self.theme.border};
-                border-radius: 18px;
+                border-radius: 12px;
                 padding: 12px 14px;
             }}
             QFrame#setupManualCard {{
-                background: {self.theme.panel_bg};
+                background: {self.theme.surface_container};
                 border: 1px solid {self.theme.border};
-                border-radius: 20px;
+                border-radius: 16px;
             }}
             QLabel#setupManualTitle {{
                 color: {self.theme.text};
@@ -9370,9 +9755,9 @@ class ComfySetupPage(QWidget):
                 border: 1px solid {self.theme.border};
             }}
             QFrame#setupMaintenanceCard {{
-                background: {self.theme.panel_bg};
+                background: {self.theme.surface_container};
                 border: 1px solid {self.theme.border};
-                border-radius: 20px;
+                border-radius: 16px;
             }}
             QLabel#setupMaintenanceTitle {{
                 color: {self.theme.text};
@@ -9386,7 +9771,7 @@ class ComfySetupPage(QWidget):
                 background: transparent;
             }}
             QFrame#setupModelChoiceCard {{
-                background: {self.theme.panel_bg};
+                background: {self.theme.surface_container_high};
                 border: 1px solid {self.theme.border};
                 border-radius: 20px;
             }}
@@ -9401,16 +9786,96 @@ class ComfySetupPage(QWidget):
                 font-size: 12px;
                 background: transparent;
             }}
-            QCheckBox#setupModelChoiceCheck {{
-                color: {self.theme.text};
-                font-size: 13px;
-                font-weight: 700;
-                spacing: 8px;
+            QLabel#setupModelChoiceSummary {{
+                color: {self.theme.blue};
+                font-size: 12px;
+                font-weight: 800;
                 background: transparent;
             }}
-            QCheckBox#setupModelChoiceCheck::indicator {{
-                width: 18px;
-                height: 18px;
+            QFrame#setupModelChoiceRow {{
+                background: {self.theme.surface_container};
+                border: 1px solid {self.theme.border};
+                border-radius: 16px;
+            }}
+            QFrame#setupModelChoiceRow:hover {{
+                background: {self.theme.surface_alt};
+                border-color: {self.theme.blue};
+            }}
+            QFrame#setupModelChoiceRow[selected="true"] {{
+                background: {self.theme.surface_container_high};
+                border: 2px solid {self.theme.blue};
+            }}
+            QFrame#setupModelChoiceRow[installState="installed"] {{
+                background: {self.theme.surface};
+                border: 2px solid {self.theme.green};
+            }}
+            QFrame#setupModelChoiceRow[installState="partial"] {{
+                border: 2px solid {self.theme.blue};
+            }}
+            QLabel#setupModelChoiceName {{
+                color: {self.theme.text};
+                font-size: 15px;
+                font-weight: 800;
+                background: transparent;
+            }}
+            QLabel#setupModelChoiceMeta {{
+                color: {self.theme.blue};
+                font-size: 11px;
+                font-weight: 700;
+                background: transparent;
+            }}
+            QLabel#setupModelChoiceComponents {{
+                color: {self.theme.muted};
+                font-size: 11px;
+                background: transparent;
+            }}
+            QFrame#setupModelChoiceRow[selected="true"] QLabel#setupModelChoiceMeta {{
+                color: {self.theme.blue};
+            }}
+            QFrame#setupModelChoiceRow[selected="true"] QLabel#setupModelChoiceComponents {{
+                color: {self.theme.muted};
+            }}
+            QLabel#setupModelChoiceState {{
+                background: {self.theme.soft_btn};
+                color: {self.theme.muted};
+                border: 1px solid {self.theme.border};
+                border-radius: 12px;
+                padding: 4px 8px;
+                font-size: 10px;
+                font-weight: 800;
+            }}
+            QFrame#setupModelChoiceRow[selected="true"] QLabel#setupModelChoiceState {{
+                background: {self.theme.blue};
+                color: white;
+                border: 1px solid {self.theme.blue};
+            }}
+            QFrame#setupModelChoiceRow[installState="installed"] QLabel#setupModelChoiceState {{
+                background: rgba(34, 197, 94, 0.16);
+                color: {self.theme.green};
+                border-color: rgba(34, 197, 94, 0.30);
+            }}
+            QPushButton#setupModelChoiceAction {{
+                background: {self.theme.soft_btn};
+                color: {self.theme.text};
+                border: 1px solid {self.theme.border};
+                border-radius: 14px;
+                padding: 0 14px;
+                font-size: 12px;
+                font-weight: 800;
+            }}
+            QPushButton#setupModelChoiceAction:hover {{
+                background: {self.theme.soft_btn_hover};
+                border-color: {self.theme.blue};
+            }}
+            QFrame#setupModelChoiceRow[selected="true"] QPushButton#setupModelChoiceAction {{
+                background: {self.theme.blue};
+                color: white;
+                border: 1px solid {self.theme.blue};
+            }}
+            QPushButton#setupModelChoiceAction:disabled {{
+                background: rgba(34, 197, 94, 0.12);
+                color: {self.theme.green};
+                border-color: rgba(34, 197, 94, 0.28);
             }}
             """
         )
@@ -9422,18 +9887,54 @@ class ComfySetupPage(QWidget):
     def selected_model_choice_values(self) -> list[str]:
         return [key for key in normalize_selected_model_choices(list(self.model_choice_checks.keys())) if self.model_choice_checks[key].isChecked()]
 
-    def on_model_choice_toggled(self, _checked: bool) -> None:
+    def update_model_choice_visual(self, key: str, selected: bool, model_state: dict | None = None) -> None:
+        row = self.model_choice_rows.get(key)
+        state = self.model_choice_states.get(key)
+        button = self.model_choice_buttons.get(key)
+        installed = bool((model_state or {}).get("ready"))
+        partial = bool((model_state or {}).get("partial"))
+        if row:
+            row.setProperty("selected", "true" if selected and not installed else "false")
+            row.setProperty("installState", "installed" if installed else ("partial" if partial else "missing"))
+            row.style().unpolish(row)
+            row.style().polish(row)
+            row.update()
+        if state:
+            missing = ", ".join(str(item) for item in (model_state or {}).get("missing_components", []))
+            state.setText(
+                "✓ Скачано"
+                if installed
+                else (f"Нет: {missing}" if partial and missing else ("Выбрано" if selected else "Нужно выбрать"))
+            )
+        if button:
+            button.setEnabled(not installed and not bool(self.active_scope))
+            button.setText("Скачано" if installed else ("Убрать из очереди" if selected else ("Выбрать для докачки" if partial else "Выбрать для скачивания")))
+        selected_count = sum(1 for checkbox in self.model_choice_checks.values() if checkbox.isChecked())
+        installed_count = sum(1 for item in (model_state or {}).get("_all_states", []) if item.get("ready"))
+        suffix = f" · Уже скачано: {installed_count}" if installed_count else ""
+        self.model_choice_summary.setText(f"К скачиванию выбрано: {selected_count} из {len(self.model_choice_checks)}{suffix}")
+
+    def on_model_choice_toggled(self, key: str, checked: bool) -> None:
+        state = dict(self.model_choice_install_states.get(key, {}))
+        state["_all_states"] = list(self.model_choice_install_states.values())
+        self.update_model_choice_visual(key, checked, state)
         if self.syncing_model_choices:
             return
         self.model_choices_changed.emit(self.selected_model_choice_values())
 
     def refresh_model_choices(self, status: dict) -> None:
         selected = set(normalize_selected_model_choices(status.get("selected_model_choices")))
+        model_states = {str(item.get("choice_key") or ""): item for item in status.get("models", [])}
+        all_states = list(model_states.values())
+        self.model_choice_install_states = model_states
         self.syncing_model_choices = True
         try:
             for key, checkbox in self.model_choice_checks.items():
                 checkbox.setChecked(key in selected)
                 checkbox.setEnabled(not bool(self.active_scope))
+                model_state = dict(model_states.get(key, {}))
+                model_state["_all_states"] = all_states
+                self.update_model_choice_visual(key, checkbox.isChecked(), model_state)
         finally:
             self.syncing_model_choices = False
 
@@ -9481,11 +9982,22 @@ class ComfySetupPage(QWidget):
             row = self.status_rows.get(f"model:{model['title']}")
             if not row:
                 continue
-            row.set_link(str(model.get("url", "")))
-            row.set_copy_fields(str(model.get("filename", "")), str(model.get("path", "")))
+            components = list(model.get("components", []))
+            row.set_link(str(components[0].get("url", "")) if components else "")
+            row.set_copy_fields(
+                f"{model.get('component_count', 0)} обязательных файла",
+                " · ".join(str(component.get("relative_dir", "")) for component in components),
+            )
             row.set_install_enabled(comfy_ready and not bool(self.active_scope))
             if model.get("ready"):
-                row.set_state(True, "Файл уже на месте.", "ready")
+                row.set_state(True, "Все обязательные компоненты уже на месте.", "ready")
+            elif model.get("partial"):
+                missing = ", ".join(str(item) for item in model.get("missing_components", [])) or "обязательные компоненты"
+                installed = ", ".join(str(item) for item in model.get("installed_components", []))
+                detail = f"Не найден: {missing}."
+                if installed:
+                    detail += f" Уже на месте: {installed}."
+                row.set_state(False, detail, "missing")
             elif model.get("skipped"):
                 choice_text = str(model.get("choice_label") or model.get("title") or "model")
                 weight_text = str(model.get("choice_weight") or "").strip()
@@ -9498,7 +10010,7 @@ class ComfySetupPage(QWidget):
             elif not comfy_ready:
                 row.set_state(False, "Сначала нужен portable ComfyUI.", "missing")
             else:
-                row.set_state(False, "Будет скачан и положен в нужную папку.", "missing")
+                row.set_state(False, f"Будут скачаны все {model.get('component_count', 0)} обязательных компонента.", "missing")
         for node in status.get("nodes", []):
             row = self.status_rows.get(f"node:{node['folder']}")
             if not row:
@@ -9780,6 +10292,7 @@ class MainWindow(QWidget):
 
     def build_ui(self) -> None:
         root = QVBoxLayout(self)
+        # 8 px spacing system: compact on desktop, but never edge-to-edge.
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(0)
 
@@ -9801,12 +10314,12 @@ class MainWindow(QWidget):
 
         content_layout = QVBoxLayout(self.main_content)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(16)
+        content_layout.setSpacing(20)
 
         self.topbar = CardFrame("topBar")
         topbar_layout = QHBoxLayout(self.topbar)
-        topbar_layout.setContentsMargins(18, 16, 18, 16)
-        topbar_layout.setSpacing(16)
+        topbar_layout.setContentsMargins(20, 14, 20, 14)
+        topbar_layout.setSpacing(12)
 
         self.settings_button = QPushButton("")
         self.settings_button.setObjectName("gearButton")
@@ -9909,8 +10422,8 @@ class MainWindow(QWidget):
 
         self.hero = CardFrame("heroCard")
         hero_layout = QVBoxLayout(self.hero)
-        hero_layout.setContentsMargins(34, 28, 34, 28)
-        hero_layout.setSpacing(14)
+        hero_layout.setContentsMargins(32, 28, 32, 28)
+        hero_layout.setSpacing(12)
 
         self.hero_title = QLabel("Публичная ссылка")
         self.hero_title.setObjectName("heroTitle")
@@ -9956,8 +10469,8 @@ class MainWindow(QWidget):
 
         self.status_panel = CardFrame("statusPanel")
         status_layout = QVBoxLayout(self.status_panel)
-        status_layout.setContentsMargins(26, 22, 26, 22)
-        status_layout.setSpacing(14)
+        status_layout.setContentsMargins(4, 8, 4, 4)
+        status_layout.setSpacing(12)
 
         self.status_title = QLabel("Статус")
         self.status_title.setObjectName("sectionTitle")
@@ -10752,7 +11265,7 @@ class MainWindow(QWidget):
         self.theme = THEMES[self.config["theme"]]
 
         self.setStyleSheet(
-            f"""
+            material3_control_styles(self.theme) + f"""
             QWidget {{
                 color: {self.theme.text};
                 background: transparent;
@@ -10767,18 +11280,23 @@ class MainWindow(QWidget):
             QLabel {{
                 background: transparent;
             }}
-            QFrame#topBar, QFrame#statusPanel, QFrame#settingsDrawer, QFrame#friendsDrawer, QFrame#logsHeaderCard, QFrame#logsCard {{
-                background: {self.theme.panel_bg};
+            QFrame#topBar, QFrame#settingsDrawer, QFrame#friendsDrawer, QFrame#logsHeaderCard, QFrame#logsCard {{
+                background: {self.theme.surface_container};
+                border: 1px solid {self.theme.border};
+                border-radius: 24px;
+            }}
+            QFrame#statusPanel {{
+                background: transparent;
+                border: none;
+                border-radius: 0px;
+            }}
+            QFrame#launchChoiceCard {{
+                background: {self.theme.surface_container};
                 border: 1px solid {self.theme.border};
                 border-radius: 28px;
             }}
-            QFrame#launchChoiceCard {{
-                background: {self.theme.panel_bg};
-                border: 1px solid {self.theme.border};
-                border-radius: 34px;
-            }}
             QFrame#heroCard {{
-                background: {self.theme.panel_bg};
+                background: {self.theme.surface_container_high};
                 border: 1px solid {self.theme.border};
                 border-radius: 28px;
             }}
@@ -10786,9 +11304,9 @@ class MainWindow(QWidget):
                 background: transparent;
             }}
             QFrame#statusCard {{
-                background: {self.theme.surface};
+                background: {self.theme.surface_container};
                 border: 1px solid {self.theme.border};
-                border-radius: 24px;
+                border-radius: 20px;
             }}
             QFrame#toggleRow {{
                 background: transparent;
@@ -10796,13 +11314,13 @@ class MainWindow(QWidget):
                 border-radius: 0px;
             }}
             QFrame#friendLinkCard {{
-                background: {self.theme.surface};
+                background: {self.theme.surface_container};
                 border: 1px solid {self.theme.border};
-                border-radius: 22px;
+                border-radius: 18px;
             }}
             QLabel#titleLabel {{
-                font-size: 24px;
-                font-weight: 700;
+                font-size: 23px;
+                font-weight: 800;
                 color: {self.theme.text};
                 background: transparent;
             }}
@@ -10812,8 +11330,8 @@ class MainWindow(QWidget):
                 background: transparent;
             }}
             QLabel#heroTitle {{
-                font-size: 28px;
-                font-weight: 700;
+                font-size: 30px;
+                font-weight: 800;
                 color: {self.theme.text};
                 background: transparent;
             }}
@@ -10840,8 +11358,8 @@ class MainWindow(QWidget):
                 background: transparent;
             }}
             QLabel#sectionTitle {{
-                font-size: 20px;
-                font-weight: 700;
+                font-size: 18px;
+                font-weight: 800;
                 color: {self.theme.text};
                 background: transparent;
             }}
@@ -10930,9 +11448,9 @@ class MainWindow(QWidget):
                 selection-background-color: {self.theme.blue};
             }}
             QFrame#linkShell {{
-                background: {self.theme.surface_alt};
-                border: 1px solid {self.theme.border};
-                border-radius: 30px;
+                background: {self.theme.surface_container};
+                border: 1px solid {self.theme.outline_variant};
+                border-radius: 22px;
             }}
             QLabel#friendStatusPill, QLabel#friendMetaPill {{
                 border-radius: 15px;
@@ -12970,6 +13488,7 @@ class MainWindow(QWidget):
 
     def show_comfy_torch_preflight_dialog(self, message: str) -> None:
         box = QMessageBox(self)
+        self.apply_material_message_box(box)
         box.setWindowTitle("ComfyUI не запущен")
         box.setIcon(QMessageBox.Warning)
         message_text = str(message or "")
@@ -13244,6 +13763,7 @@ class MainWindow(QWidget):
         self.show_toast("Вас попытались взломать. ComfyUI и туннель остановлены.", True)
 
         box = QMessageBox(self)
+        self.apply_material_message_box(box, destructive=True)
         box.setWindowTitle("Попытка взлома через туннель")
         box.setIcon(QMessageBox.Critical)
         box.setText("Вас попытались взломать. Туннель прекратил работу.")
@@ -13273,6 +13793,31 @@ class MainWindow(QWidget):
             self.request_refresh_view()
         elif clicked == close_button:
             self.request_refresh_view()
+
+    def apply_material_message_box(self, box: QMessageBox, destructive: bool = False) -> None:
+        action = self.theme.red if destructive else self.theme.blue
+        box.setStyleSheet(
+            material3_control_styles(self.theme)
+            + f"""
+                QMessageBox {{
+                    background: {self.theme.surface_container};
+                    color: {self.theme.text};
+                }}
+                QLabel {{
+                    color: {self.theme.text};
+                    background: transparent;
+                    font-size: 13px;
+                }}
+                QPushButton {{
+                    min-width: 110px;
+                }}
+                QPushButton:default {{
+                    background: {action};
+                    color: white;
+                    border-color: {action};
+                }}
+            """
+        )
 
     def closeEvent(self, event) -> None:
         self.security_guard_stop.set()

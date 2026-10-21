@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-ROOT = Path(r"C:\Users\14\ComfyPortalRepo")
+ROOT = Path(SPEC).resolve().parent
 ASSETS = ROOT / "assets"
 TOOLS = ROOT / "tools"
 

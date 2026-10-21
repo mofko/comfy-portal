@@ -9,6 +9,7 @@ Portable Windows launcher for ComfyUI with:
 - friend links
 - built-in setup page for Comfy, models, and nodes
 - logs, settings, launch mode selection, and autorun
+- a folder button that opens the configured ComfyUI directory
 
 ## Install
 
@@ -43,9 +44,14 @@ The built-in setup page can:
 
 - download a pinned portable ComfyUI package
 - install ComfyUI Manager
+- use ComfyUI Manager v4 when supported by the installed ComfyUI
 - place required models into the correct folders
 - install supported custom nodes
+- download MiaoMiao RealSkin EPS-v1.4 into `ComfyUI/models/checkpoints`
 - create missing folders automatically
+
+The ComfyUI installer checks the latest official portable release, so its
+download is not tied to a particular ComfyUI version.
 
 ## Portable release
 

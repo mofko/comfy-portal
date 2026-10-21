@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Comfy Portal"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.9"
 APP_USER_MODEL_ID = "Mofko.ComfyPortal"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_AUTOSTART_VALUE = APP_NAME
@@ -169,6 +169,7 @@ COMFY_PACKAGE_MARKER_NAME = ".comfy_portal_source.json"
 CUSTOM_COMFY_ARCHIVE_NAME = "ComfyPortal.custom_comfy.7z"
 CUSTOM_COMFY_URL_FILENAME = "ComfyPortal.custom_comfy_url.txt"
 COMFYUI_MANAGER_ARCHIVE_URL = "https://github.com/ltdrdata/ComfyUI-Manager/archive/refs/heads/main.zip"
+COMFYUI_MANAGER_DOCS_URL = "https://github.com/Comfy-Org/ComfyUI#comfyui-manager"
 DOWNLOAD_USER_AGENT = f"ComfyPortal/{APP_VERSION}"
 BUNDLED_CIVITAI_KEYS_B64 = (
     "NTY0MDAxNDRlMTlkZGFjZDMxZjcwNTNkMTZkMzI5Y2M=",
@@ -184,6 +185,7 @@ MODEL_SIZE_HINTS = {
     "MiaoMiao Harem (Anime Coloring)": 6 * 1024 * 1024 * 1024,
     "Krea 2 LUSTIFY": 8 * 1024 * 1024 * 1024,
     "Nova Anime XL": 2 * 1024 * 1024 * 1024,
+    "MiaoMiao RealSkin EPS-v1.4": 7 * 1024 * 1024 * 1024,
 }
 MODEL_CHOICE_SPECS = (
     {
@@ -213,6 +215,12 @@ MODEL_CHOICE_SPECS = (
     {
         "key": "nova_anime_xl",
         "title": "Nova Anime XL",
+        "weight": "Checkpoint",
+        "hint": "один файл в models/checkpoints",
+    },
+    {
+        "key": "miaomiao_realskin",
+        "title": "MiaoMiao RealSkin EPS-v1.4",
         "weight": "Checkpoint",
         "hint": "один файл в models/checkpoints",
     },
@@ -574,6 +582,18 @@ STARTER_MODEL_SPECS = (
         "detect_extensions": (".safetensors", ".ckpt"),
         "model_choice_key": "nova_anime_xl",
         "filename_from_response": True,
+    },
+    {
+        "title": "MiaoMiao RealSkin EPS-v1.4 — Checkpoint",
+        "bundle_id": "miaomiao_realskin",
+        "bundle_title": "MiaoMiao RealSkin EPS-v1.4",
+        "component": "Checkpoint",
+        "filename": "miaomiaoRealskin_epsV14.safetensors",
+        "url": "https://civitai.red/api/download/models/2602600?fileId=2489945",
+        "relative_dir": ("ComfyUI", "models", "checkpoints"),
+        "detect_names": ("miaomiaoRealskin_epsV14.safetensors",),
+        "detect_extensions": (".safetensors",),
+        "model_choice_key": "miaomiao_realskin",
     },
 )
 REQUIRED_NODE_SPECS = (
@@ -1854,6 +1874,8 @@ def comfy_launch_command(root: Path, config: dict | None = None) -> list[str]:
     for required_arg in REQUIRED_COMFY_ARGS:
         if required_arg not in args:
             args.append(required_arg)
+    if manager_v4_requirements_path(root) and manager_is_installed(root) and "--enable-manager" not in args:
+        args.append("--enable-manager")
     return [
         str(root / "python_embeded" / "python.exe"),
         "-u",
@@ -2937,6 +2959,22 @@ def current_comfy_root(config: dict | None = None) -> Path | None:
         return None
 
 
+def configured_comfy_directory(config: dict | None = None) -> Path | None:
+    config = load_config() if config is None else config
+    configured = normalize_root_path(config.get("comfy_root", ""))
+    if configured:
+        candidate = Path(configured)
+        if is_comfy_root(candidate):
+            root = candidate
+        elif candidate.name.lower() == "comfyui" and is_comfy_root(candidate.parent):
+            root = candidate.parent
+        else:
+            return None
+    else:
+        root = current_comfy_root(config)
+    return root / "ComfyUI" if root else None
+
+
 def discover_comfy_root_in(base_dir: Path) -> Path | None:
     if not base_dir.exists():
         return None
@@ -3005,11 +3043,33 @@ def node_is_installed(root: Path | None, spec: dict) -> bool:
 def manager_is_installed(root: Path | None) -> bool:
     if not root:
         return False
+    manager_requirements = manager_v4_requirements_path(root)
+    if manager_requirements:
+        python_bin = root / "python_embeded" / "python.exe"
+        if not python_bin.exists():
+            return False
+        try:
+            installed_version = embedded_python_package_version(python_bin, "comfyui_manager")
+            requirements = manager_requirements.read_text(encoding="utf-8").splitlines()
+            for line in requirements:
+                parsed = parse_simple_requirement_line(line)
+                if parsed and parsed[0] == "comfyui-manager":
+                    return simple_requirement_satisfied(installed_version, parsed[1], parsed[2])
+            return bool(installed_version)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
     path = root / "ComfyUI" / "custom_nodes" / "comfyui-manager"
     try:
         return path.is_dir() and any(path.iterdir())
     except Exception:
         return False
+
+
+def manager_v4_requirements_path(root: Path | None) -> Path | None:
+    if not root:
+        return None
+    path = root / "ComfyUI" / "manager_requirements.txt"
+    return path if path.is_file() else None
 
 
 def starter_model_target_dir(root: Path, spec: dict) -> Path:
@@ -3376,6 +3436,21 @@ def invalidate_setup_status_cache() -> None:
 def setup_status_snapshot() -> dict | None:
     cached = SETUP_STATUS_CACHE.get("status")
     return dict(cached) if cached else None
+
+
+def initial_setup_status(config: dict) -> dict:
+    root = normalize_root_path(config.get("comfy_root", ""))
+    backend = normalize_comfy_backend(config.get("comfy_backend", DEFAULT_COMFY_BACKEND))
+    return {
+        "root": root,
+        "comfy_ready": is_comfy_root(root),
+        "manager_ready": False,
+        "comfy_update_available": False,
+        "source_url": comfy_backend_portable_url(backend),
+        "comfy_backend": backend,
+        "models": [],
+        "nodes": [],
+    }
 
 
 def comfy_setup_has_missing(status: dict) -> bool:
@@ -4821,6 +4896,21 @@ def install_comfyui_portable(install_parent: Path, progress=None, force_update: 
 
 
 def install_comfyui_manager(root: Path, progress=None) -> str:
+    manager_requirements = manager_v4_requirements_path(root)
+    if manager_requirements:
+        if manager_is_installed(root):
+            if progress:
+                progress(1.0, "ComfyUI Manager уже установлен", build_setup_progress_meta("manager", "done", 100, "Manager уже на месте"))
+            return "Manager уже установлен."
+        if progress:
+            progress(0.05, "Устанавливаем ComfyUI Manager", build_setup_progress_meta("manager", "prepare", 5, "Зависимости из manager_requirements.txt"))
+        embedded_pip_install(root, ["-r", str(manager_requirements)])
+        if not manager_is_installed(root):
+            raise RuntimeError("ComfyUI Manager установлен, но пакет comfyui_manager не найден в python_embeded.")
+        invalidate_setup_status_cache()
+        if progress:
+            progress(1.0, "ComfyUI Manager установлен", build_setup_progress_meta("manager", "done", 100, "Manager v4 готов"))
+        return "Manager v4 установлен и проверен."
     manager_dir = root / "ComfyUI" / "custom_nodes" / "comfyui-manager"
     if manager_is_installed(root):
         if progress:
@@ -4880,6 +4970,17 @@ def install_comfyui_manager(root: Path, progress=None) -> str:
 
 
 def reinstall_comfyui_manager(root: Path, progress=None) -> str:
+    manager_requirements = manager_v4_requirements_path(root)
+    if manager_requirements:
+        if progress:
+            progress(0.05, "Переустанавливаем ComfyUI Manager", build_setup_progress_meta("manager", "prepare", 5, "Manager v4"))
+        embedded_pip_install(root, ["--force-reinstall", "-r", str(manager_requirements)])
+        if not manager_is_installed(root):
+            raise RuntimeError("Переустановка Manager v4 завершилась, но пакет comfyui_manager не найден.")
+        invalidate_setup_status_cache()
+        if progress:
+            progress(1.0, "ComfyUI Manager переустановлен", build_setup_progress_meta("manager", "done", 100, "Manager v4 готов"))
+        return "Manager v4 переустановлен и проверен."
     manager_dir = root / "ComfyUI" / "custom_nodes" / "comfyui-manager"
     if manager_dir.exists():
         if progress:
@@ -5203,12 +5304,99 @@ def repair_rgthree_comfy(root: Path, allow_reclone: bool = True) -> bool:
     return True
 
 
+def impact_pack_script_path(root: Path) -> Path:
+    return root / "ComfyUI" / "custom_nodes" / "ComfyUI-Impact-Pack" / "js" / "impact-pack.js"
+
+
+def patched_impact_pack_script(source: str) -> str | None:
+    bad_block = re.compile(
+        r"(?m)^[\t ]*if\(link_info\.target_slot == 0 && this\.inputs\.length > 3\)[^\n]*\n"
+        r"[\t ]*origin_type = this\.inputs\[1\]\.type;\n"
+        r"[\t ]*node\.connect\(link_info\.origin_slot, node\.id, 'input1'\);\n"
+        r"[\t ]*}\n"
+    )
+    if len(bad_block.findall(source)) != 1:
+        return None
+    load_guard = "if(stackTrace.includes('loadGraphData')) {"
+    output_guard = "!stackTrace.includes('loadGraphData')) {"
+    if source.count(load_guard) != 1 or source.count(output_guard) != 1:
+        return None
+    patched = bad_block.sub(
+        "\t\t\t\t\t\t\t// The type-propagation loop below handles slot 0. Reconnecting here\n"
+        "\t\t\t\t\t\t\t// passes an id instead of a node and breaks workflow reloads.\n",
+        source,
+        count=1,
+    )
+    patched = patched.replace(
+        load_guard,
+        "if(app.configuringGraph || stackTrace.includes('loadGraphData') || stackTrace.includes('LGraph.configure') || stackTrace.includes('trackConfiguring')) {",
+        1,
+    )
+    patched = patched.replace(
+        output_guard,
+        "!app.configuringGraph &&\n\t\t\t\t\t\t!stackTrace.includes('loadGraphData') &&\n"
+        "\t\t\t\t\t\t!stackTrace.includes('LGraph.configure') &&\n"
+        "\t\t\t\t\t\t!stackTrace.includes('trackConfiguring')) {",
+        1,
+    )
+    return patched
+
+
+def repair_impact_pack_frontend(root: Path) -> bool:
+    script = impact_pack_script_path(root)
+    if not script.is_file():
+        return False
+    try:
+        original = script.read_text(encoding="utf-8")
+        patched = patched_impact_pack_script(original)
+        if patched is None:
+            return False
+        backup = script.with_name("impact-pack.js.portal-original.bak")
+        backup.write_text(original, encoding="utf-8")
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=script.parent, suffix=".tmp", delete=False) as handle:
+            handle.write(patched)
+            temp_path = Path(handle.name)
+        try:
+            os.replace(temp_path, script)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        write_portal_log("impact_pack.frontend.fixed", path=script)
+        return True
+    except Exception as exc:
+        write_portal_log("impact_pack.frontend.error", str(exc), path=script)
+        return False
+
+
+def restore_impact_pack_frontend_before_update(root: Path) -> bool:
+    script = impact_pack_script_path(root)
+    backup = script.with_name("impact-pack.js.portal-original.bak")
+    if not script.is_file() or not backup.is_file():
+        return False
+    try:
+        original = backup.read_text(encoding="utf-8")
+        if patched_impact_pack_script(original) != script.read_text(encoding="utf-8"):
+            return False
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=script.parent, suffix=".tmp", delete=False) as handle:
+            handle.write(original)
+            temp_path = Path(handle.name)
+        try:
+            os.replace(temp_path, script)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        write_portal_log("impact_pack.frontend.restored_for_update", path=script)
+        return True
+    except Exception as exc:
+        write_portal_log("impact_pack.frontend.restore_error", str(exc), path=script)
+        return False
+
+
 def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[dict, ...] | None = None) -> list[str]:
     custom_nodes_dir = root / "ComfyUI" / "custom_nodes"
     custom_nodes_dir.mkdir(parents=True, exist_ok=True)
     results: list[str] = []
     specs_to_install = pending_node_specs(root, specs)
     if not specs_to_install:
+        repair_impact_pack_frontend(root)
         if progress:
             progress(1.0, "Все ноды уже установлены", "")
         return results
@@ -5290,6 +5478,7 @@ def install_missing_nodes(root: Path, progress=None, specs: list[dict] | tuple[d
         results.append(f"{spec['title']} установлен")
         if progress:
             progress(index / total_count, f"{spec['title']} установлен", build_setup_progress_meta(row_key, "done", 100, "Нода проверена"))
+    repair_impact_pack_frontend(root)
     return results
 
 
@@ -5342,6 +5531,9 @@ def update_installed_nodes(root: Path, progress=None) -> list[str]:
     total_count = len(update_targets)
     python_bin = root / "python_embeded" / "python.exe"
     for index, (target_dir, title, row_key) in enumerate(update_targets, start=1):
+        impact_target = target_dir.name.lower() == "comfyui-impact-pack"
+        if impact_target:
+            restore_impact_pack_frontend_before_update(root)
         if progress:
             progress((index - 1) / total_count, f"Обновляем {title}", build_setup_progress_meta(row_key, "update", None, "git pull") if row_key else "git pull")
         try:
@@ -5360,6 +5552,8 @@ def update_installed_nodes(root: Path, progress=None) -> list[str]:
                 ),
             )
         except RuntimeError as exc:
+            if impact_target:
+                repair_impact_pack_frontend(root)
             message = str(exc)
             results.append(message)
             if progress:
@@ -5392,6 +5586,8 @@ def update_installed_nodes(root: Path, progress=None) -> list[str]:
                     progress(index / total_count, message, build_setup_progress_meta(row_key, "error", 0, "pip install не удался") if row_key else "pip install не удался")
                 continue
         invalidate_setup_status_cache()
+        if impact_target:
+            repair_impact_pack_frontend(root)
         results.append(f"{title} обновлена")
         if progress:
             progress(index / total_count, f"{title} обновлена", build_setup_progress_meta(row_key, "done", 100, "Готово") if row_key else "Готово")
@@ -6973,6 +7169,7 @@ def start_comfy_if_needed() -> str:
     with COMFY_LAUNCH_LOCK:
         config = load_config()
         comfy_root = ensure_layout(config)
+        repair_impact_pack_frontend(comfy_root)
         state = load_state()
         port_open = port_is_open(config["port"])
         comfy_ready = comfy_http_ready(config["port"]) if port_open else False
@@ -7838,6 +8035,7 @@ class UiBridge(QObject):
     snapshot_ready = Signal(object)
     snapshot_failed = Signal(str)
     setup_status_ready = Signal(object)
+    setup_status_failed = Signal(str)
     update_ready = Signal(object)
     update_failed = Signal(str)
     logs_ready = Signal(object)
@@ -7932,6 +8130,17 @@ def build_icon_pixmap(icon_name: str, color: str, size: int = 26) -> QIcon:
         painter.drawLine(QPoint(size // 2, int(size * 0.20)), QPoint(size // 2, int(size * 0.54)))
         painter.drawLine(QPoint(size // 2, int(size * 0.56)), QPoint(int(size * 0.34), int(size * 0.40)))
         painter.drawLine(QPoint(size // 2, int(size * 0.56)), QPoint(int(size * 0.66), int(size * 0.40)))
+    elif icon_name == "folder":
+        outline = QPolygon([
+            QPoint(int(size * 0.12), int(size * 0.34)),
+            QPoint(int(size * 0.12), int(size * 0.76)),
+            QPoint(int(size * 0.88), int(size * 0.76)),
+            QPoint(int(size * 0.88), int(size * 0.28)),
+            QPoint(int(size * 0.49), int(size * 0.28)),
+            QPoint(int(size * 0.40), int(size * 0.19)),
+            QPoint(int(size * 0.12), int(size * 0.19)),
+        ])
+        painter.drawPolygon(outline)
     elif icon_name == "logs":
         left = int(size * 0.24)
         right = int(size * 0.76)
@@ -9167,13 +9376,15 @@ class SetupStatusRow(QFrame):
             bg = "rgba(239, 68, 68, 0.12)"
             fg = self.theme.red
             border = "rgba(239, 68, 68, 0.24)"
-        self.badge.setText(text)
-        self.badge.setStyleSheet(
-            f"background: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 17px; font-size: 12px; font-weight: 800; padding: 0 12px;"
-        )
+        if self.badge.text() != text:
+            self.badge.setText(text)
+        style = f"background: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 17px; font-size: 12px; font-weight: 800; padding: 0 12px;"
+        if self.badge.styleSheet() != style:
+            self.badge.setStyleSheet(style)
 
     def set_state(self, ready: bool, detail: str, state_kind: str = "missing") -> None:
-        self.detail_label.setText(detail)
+        if self.detail_label.text() != detail:
+            self.detail_label.setText(detail)
         self.update_badge(ready, state_kind)
         show_install = bool(self.install_key) and (not ready) and state_kind == "missing"
         self.install_button.setVisible(show_install)
@@ -9962,7 +10173,9 @@ class ComfySetupPage(QWidget):
         else:
             self.folder_label.setText("Папка пока не выбрана")
         self.status_rows["comfy"].set_link(str(status.get("source_url", "") or comfy_backend_portable_url(status.get("comfy_backend", DEFAULT_COMFY_BACKEND))))
-        self.status_rows["manager"].set_link(COMFYUI_MANAGER_ARCHIVE_URL)
+        self.status_rows["manager"].set_link(
+            COMFYUI_MANAGER_DOCS_URL if root_text and manager_v4_requirements_path(Path(root_text)) else COMFYUI_MANAGER_ARCHIVE_URL
+        )
         self.status_rows["manager"].set_install_enabled(comfy_ready and not bool(self.active_scope))
         maintenance_enabled = comfy_ready and not bool(self.active_scope)
         self.nodes_update_button.setEnabled(maintenance_enabled)
@@ -10074,7 +10287,9 @@ class ComfySetupPage(QWidget):
         target.set_progress(0, "Подготавливаем установку.", f"Примерное время: {eta_text}", True)
         target.set_paused(False)
         target.set_action_state("Установка...", False, True)
-        self.refresh_status(cached_comfy_setup_status(force=True))
+        cached_status = setup_status_snapshot()
+        if cached_status:
+            self.refresh_status(cached_status)
 
     def set_install_paused(self, paused: bool) -> None:
         if self.active_scope in {"comfy", "manager", "manager_reinstall"} or self.active_scope.startswith("model"):
@@ -10109,7 +10324,9 @@ class ComfySetupPage(QWidget):
         self.active_scope = ""
         target.set_progress(0 if is_error else 100, message, "Установка остановилась с ошибкой." if is_error else "Готово.", True)
         self.clear_row_progress()
-        self.refresh_status(cached_comfy_setup_status(force=True))
+        cached_status = setup_status_snapshot()
+        if cached_status:
+            self.refresh_status(cached_status)
 
 
 class MainWindow(QWidget):
@@ -10123,6 +10340,7 @@ class MainWindow(QWidget):
         self.bridge.snapshot_ready.connect(self.on_snapshot_ready)
         self.bridge.snapshot_failed.connect(self.on_snapshot_failed)
         self.bridge.setup_status_ready.connect(self.on_setup_status_ready)
+        self.bridge.setup_status_failed.connect(self.on_setup_status_failed)
         self.bridge.update_ready.connect(self.on_update_ready)
         self.bridge.update_failed.connect(self.on_update_failed)
         self.bridge.logs_ready.connect(self.on_logs_fast_ready)
@@ -10174,6 +10392,7 @@ class MainWindow(QWidget):
         self.onboarding_install_expanded = False
         self.onboarding_force_space_step = False
         self.onboarding_install_target_parent: Path | None = None
+        self.onboarding_status_pending = False
         self.onboarding_install_rows: dict[str, SetupStatusRow] = {}
         self.refresh_inflight = False
         self.refresh_requested = False
@@ -10194,6 +10413,9 @@ class MainWindow(QWidget):
         self.security_incident_dialog_open = False
         self.last_setup_page_refresh_at = 0.0
         self.setup_status_refresh_inflight = False
+        self.setup_status_refresh_requested = False
+        self.setup_status_refresh_requested_links = False
+        self.pending_setup_install: tuple[str, bool] | None = None
         self.pending_page_index: int | None = None
         self.page_fade_phase = "idle"
         self.toast_timer = QTimer(self)
@@ -10212,6 +10434,7 @@ class MainWindow(QWidget):
         self.build_ui()
         self.apply_theme()
         self.load_controls_from_config()
+        self.request_setup_status_refresh()
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setTimerType(Qt.CoarseTimer)
@@ -10385,6 +10608,15 @@ class MainWindow(QWidget):
         self.install_badge.move(self.install_button.width() - 16, 0)
         self.install_badge.hide()
 
+        self.comfy_folder_button = QPushButton("")
+        self.comfy_folder_button.setObjectName("comfyFolderButton")
+        self.comfy_folder_button.setFixedSize(54, 52)
+        self.comfy_folder_button.setIconSize(QSize(25, 25))
+        self.comfy_folder_button.setToolTip("Открыть папку ComfyUI")
+        self.comfy_folder_button.setAccessibleName("Открыть папку ComfyUI")
+        self.comfy_folder_button.setCursor(Qt.PointingHandCursor)
+        self.comfy_folder_button.clicked.connect(self.open_comfy_folder)
+
         self.action_button = QPushButton("Запустить")
         self.action_button.setObjectName("startButton")
         self.action_button.setFixedSize(148, 48)
@@ -10403,6 +10635,7 @@ class MainWindow(QWidget):
 
         top_actions_layout = QHBoxLayout()
         top_actions_layout.setSpacing(10)
+        top_actions_layout.addWidget(self.comfy_folder_button)
         top_actions_layout.addWidget(self.install_button)
         top_actions_layout.addWidget(self.logs_button)
         top_actions_layout.addWidget(self.friends_button)
@@ -10580,18 +10813,13 @@ class MainWindow(QWidget):
         logs_page_layout.addWidget(self.logs_filter_bar)
         logs_page_layout.addWidget(self.logs_card, 1)
 
-        self.setup_page = ComfySetupPage(self.theme, cached_comfy_setup_status(self.config), self)
-        self.setup_page_widget = self.setup_page
-        self.setup_page.install_requested.connect(self.start_setup_install)
-        self.setup_page.nodes_update_requested.connect(lambda: self.start_setup_install("nodes_update"))
-        self.setup_page.manager_reinstall_requested.connect(lambda: self.start_setup_install("manager_reinstall"))
-        self.setup_page.pause_requested.connect(self.toggle_setup_install_pause)
-        self.setup_page.cancel_requested.connect(self.cancel_setup_install)
-        self.setup_page.model_choices_changed.connect(self.on_setup_model_choices_changed)
-        self.setup_page.model_install_requested.connect(self.start_single_model_install)
-        self.setup_page.node_install_requested.connect(self.start_single_node_install)
-        self.setup_page.back_requested.connect(lambda: self.set_setup_view_open(False))
-        self.page_stack.addWidget(self.setup_page)
+        self.setup_page_container = QWidget()
+        self.setup_page_layout = QVBoxLayout(self.setup_page_container)
+        self.setup_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.setup_loading_label = QLabel("Проверяем установку ComfyUI...")
+        self.setup_loading_label.setAlignment(Qt.AlignCenter)
+        self.setup_page_layout.addWidget(self.setup_loading_label)
+        self.page_stack.addWidget(self.setup_page_container)
 
         self.toast = QLabel("", self)
         self.toast.setObjectName("toast")
@@ -10726,7 +10954,7 @@ class MainWindow(QWidget):
         self.onboarding_install_path.setObjectName("launchChoiceStats")
         self.onboarding_install_path.setWordWrap(True)
 
-        onboarding_status = cached_comfy_setup_status(self.config)
+        onboarding_status = initial_setup_status(self.config)
         self.onboarding_install_section = SetupSectionCard("comfy", "Установка Comfy", "Установка...", self.theme)
         self.onboarding_install_section.action_button.hide()
         self.onboarding_install_section.pause_requested.connect(self.toggle_setup_install_pause)
@@ -11459,7 +11687,7 @@ class MainWindow(QWidget):
                 font-weight: 700;
                 background: transparent;
             }}
-            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#saveSettingsButton, QPushButton#repairLaunchButton, QPushButton#resetConfigButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#installButton, QPushButton#logsBackButton, QPushButton#logsButton, QPushButton#githubBrandButton {{
+            QPushButton#gearButton, QPushButton#comfyFolderButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#saveSettingsButton, QPushButton#repairLaunchButton, QPushButton#resetConfigButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#installButton, QPushButton#logsBackButton, QPushButton#logsButton, QPushButton#githubBrandButton {{
                 border: none;
                 border-radius: 20px;
                 padding: 12px 18px;
@@ -11479,15 +11707,15 @@ class MainWindow(QWidget):
                 font-size: 14px;
                 font-weight: 700;
             }}
-            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#githubBrandButton {{
+            QPushButton#gearButton, QPushButton#comfyFolderButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#githubBrandButton {{
                 padding: 0px;
             }}
-            QPushButton#gearButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#logsBackButton, QPushButton#logsButton {{
+            QPushButton#gearButton, QPushButton#comfyFolderButton, QPushButton#copyButton, QPushButton#refreshButton, QPushButton#friendsButton, QPushButton#friendCustomButton, QPushButton#logsBackButton, QPushButton#logsButton {{
                 background: {self.theme.soft_btn};
                 color: {self.theme.text};
                 border: 1px solid {self.theme.border};
             }}
-            QPushButton#gearButton:hover, QPushButton#copyButton:hover, QPushButton#refreshButton:hover, QPushButton#friendsButton:hover, QPushButton#friendCustomButton:hover, QPushButton#logsBackButton:hover, QPushButton#logsButton:hover {{
+            QPushButton#gearButton:hover, QPushButton#comfyFolderButton:hover, QPushButton#copyButton:hover, QPushButton#refreshButton:hover, QPushButton#friendsButton:hover, QPushButton#friendCustomButton:hover, QPushButton#logsBackButton:hover, QPushButton#logsButton:hover {{
                 background: {self.theme.soft_btn_hover};
             }}
             QPushButton#friendsButton:pressed, QPushButton#friendCustomButton:pressed, QPushButton#logsButton:pressed, QPushButton#saveSettingsButton:pressed, QPushButton#repairLaunchButton:pressed, QPushButton#resetConfigButton:pressed, QPushButton#friendCreateButton:pressed {{
@@ -11885,6 +12113,7 @@ class MainWindow(QWidget):
         else:
             self.settings_button.setIcon(build_icon_pixmap("settings", icon_color, 26))
         self.copy_button.setIcon(copy_icon)
+        self.comfy_folder_button.setIcon(build_icon_pixmap("folder", icon_color, 25))
         self.refresh_button.setIcon(build_icon_pixmap("refresh", icon_color, 20))
         self.install_button.setIcon(build_icon_pixmap("install", install_icon_color, 26))
         self.logs_button.setIcon(build_icon_pixmap("logs", icon_color, 20))
@@ -12302,6 +12531,11 @@ class MainWindow(QWidget):
             self.update_install_button()
             return
         if opened:
+            cached_status = setup_status_snapshot()
+            if cached_status and self.setup_page_widget is None:
+                self.ensure_setup_page(cached_status)
+            elif self.setup_page_widget is None:
+                self.request_setup_status_refresh()
             if self.drawer_open:
                 self.set_drawer_open(False)
             if self.friends_open:
@@ -12323,8 +12557,28 @@ class MainWindow(QWidget):
         self.page_fade_anim.setEndValue(0.0)
         self.page_fade_anim.start()
 
+    def ensure_setup_page(self, status: dict) -> None:
+        if self.setup_page_widget is not None:
+            return
+        self.setup_page = ComfySetupPage(self.theme, status, self.setup_page_container)
+        self.setup_page_widget = self.setup_page
+        self.setup_page.install_requested.connect(self.start_setup_install)
+        self.setup_page.nodes_update_requested.connect(lambda: self.start_setup_install("nodes_update"))
+        self.setup_page.manager_reinstall_requested.connect(lambda: self.start_setup_install("manager_reinstall"))
+        self.setup_page.pause_requested.connect(self.toggle_setup_install_pause)
+        self.setup_page.cancel_requested.connect(self.cancel_setup_install)
+        self.setup_page.model_choices_changed.connect(self.on_setup_model_choices_changed)
+        self.setup_page.model_install_requested.connect(self.start_single_model_install)
+        self.setup_page.node_install_requested.connect(self.start_single_node_install)
+        self.setup_page.back_requested.connect(lambda: self.set_setup_view_open(False))
+        self.setup_loading_label.hide()
+        self.setup_page_layout.addWidget(self.setup_page)
+        self.update_button_icons()
+
     def request_setup_status_refresh(self, force_links: bool = False) -> None:
         if self.setup_status_refresh_inflight:
+            self.setup_status_refresh_requested = True
+            self.setup_status_refresh_requested_links = self.setup_status_refresh_requested_links or force_links
             return
         self.setup_status_refresh_inflight = True
         config_snapshot = dict(self.config)
@@ -12338,19 +12592,49 @@ class MainWindow(QWidget):
                     self.bridge.setup_status_ready.emit(status)
                 except RuntimeError:
                     return
-            except Exception:
-                self.setup_status_refresh_inflight = False
+            except Exception as exc:
+                try:
+                    self.bridge.setup_status_failed.emit(str(exc))
+                except RuntimeError:
+                    return
 
         threading.Thread(target=worker, daemon=True).start()
 
     def on_setup_status_ready(self, status: dict) -> None:
         self.setup_status_refresh_inflight = False
         self.last_setup_page_refresh_at = time.monotonic()
-        if self.setup_page_widget is not None:
+        if self.setup_view_open and self.setup_page_widget is None:
+            self.ensure_setup_page(status)
+        elif self.setup_page_widget is not None:
             self.setup_page_widget.refresh_status(status)
-        if self.launch_choice_open:
+        if self.onboarding_status_pending:
+            self.apply_onboarding_flow_status(status)
+            self.onboarding_status_pending = False
+        elif self.launch_choice_open:
             self.refresh_onboarding_install_rows(status)
         self.update_install_button()
+        if self.setup_status_refresh_requested:
+            force_links = self.setup_status_refresh_requested_links
+            self.setup_status_refresh_requested = False
+            self.setup_status_refresh_requested_links = False
+            QTimer.singleShot(0, partial(self.request_setup_status_refresh, force_links))
+        elif self.pending_setup_install and SETUP_STATUS_CACHE["key"] == setup_status_cache_key(self.config):
+            scope, force_update = self.pending_setup_install
+            self.pending_setup_install = None
+            QTimer.singleShot(0, partial(self.start_setup_install, scope, force_update))
+
+    def on_setup_status_failed(self, message: str) -> None:
+        self.setup_status_refresh_inflight = False
+        if self.pending_setup_install:
+            self.pending_setup_install = None
+            self.show_toast(f"Не удалось проверить установку: {message}", True)
+        if self.setup_view_open and self.setup_page_widget is None:
+            self.setup_loading_label.setText(f"Не удалось проверить установку: {message}")
+        if self.setup_status_refresh_requested:
+            force_links = self.setup_status_refresh_requested_links
+            self.setup_status_refresh_requested = False
+            self.setup_status_refresh_requested_links = False
+            QTimer.singleShot(0, partial(self.request_setup_status_refresh, force_links))
 
     def on_page_fade_finished(self) -> None:
         if self.page_fade_phase == "out":
@@ -12585,6 +12869,14 @@ class MainWindow(QWidget):
     def open_github_repo(self) -> None:
         QDesktopServices.openUrl(QUrl(GITHUB_REPO_URL))
 
+    def open_comfy_folder(self) -> None:
+        comfy_dir = configured_comfy_directory()
+        if not comfy_dir:
+            self.show_toast("Папка ComfyUI не найдена. Выбери её в настройках.", True)
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(comfy_dir))):
+            self.show_toast(f"Не удалось открыть папку: {comfy_dir}", True)
+
     def open_github_releases(self) -> None:
         if self.update_banner_kind == "comfy":
             target = str((self.release_info or {}).get("portable_url", "") or comfy_backend_portable_url(self.config.get("comfy_backend", DEFAULT_COMFY_BACKEND)))
@@ -12674,14 +12966,27 @@ class MainWindow(QWidget):
             self.onboarding_subdomain_input.setFocus()
 
     def refresh_onboarding_flow(self) -> None:
-        status = cached_comfy_setup_status(self.config, force=True)
+        status = setup_status_snapshot()
+        configured_root = normalize_root_path(self.config.get("comfy_root", ""))
+        status_root = normalize_root_path(status.get("root", "")) if status else ""
+        if status and (not configured_root or configured_root == status_root):
+            self.onboarding_status_pending = False
+            self.apply_onboarding_flow_status(status)
+        else:
+            self.onboarding_status_pending = True
+            self.request_setup_status_refresh()
+            self.onboarding_space_stats.setText("Проверяем папку и свободное место...")
+            self.set_onboarding_step("space")
+
+    def apply_onboarding_flow_status(self, status: dict) -> None:
         self.refresh_onboarding_install_rows(status)
-        anchor = current_comfy_root(self.config) or BASE_DIR
+        root_text = str(status.get("root", "") or "")
+        current_root = Path(root_text) if status.get("comfy_ready") and root_text else None
+        anchor = current_root or BASE_DIR
         free_bytes = free_bytes_for_path(anchor)
         needed_bytes = 0 if not comfy_portable_has_missing(status) else PORTABLE_SIZE_HINT_BYTES + ONBOARDING_STORAGE_HEADROOM_BYTES
         enough_space = needed_bytes <= 0 or free_bytes >= needed_bytes
         self.onboarding_space_stats.setText(f"Свободно: {format_bytes(free_bytes)}\nНужно примерно: {format_bytes(needed_bytes)}")
-        current_root = current_comfy_root(self.config)
         self.onboarding_install_path.setText(
             f"Portable-папка: {current_root}" if current_root else "Portable-папка пока не найдена. Можно выбрать существующую или поставить все с нуля."
         )
@@ -12711,8 +13016,6 @@ class MainWindow(QWidget):
         self.load_controls_from_config(force=True)
         self.request_refresh_view()
         self.refresh_onboarding_flow()
-        if not comfy_portable_has_missing(cached_comfy_setup_status(self.config, force=True)):
-            self.set_onboarding_step("mode")
 
     def begin_onboarding_install(self) -> None:
         if self.busy or self.install_setup_inflight:
@@ -12730,7 +13033,7 @@ class MainWindow(QWidget):
         self.install_setup_paused_poll = self.poll_timer.isActive()
         if self.install_setup_paused_poll:
             self.poll_timer.stop()
-        self.install_setup_eta = estimate_setup_eta(cached_comfy_setup_status(self.config, force=True))
+        self.install_setup_eta = estimate_setup_eta(setup_status_snapshot() or initial_setup_status(self.config))
         self.install_setup_progress_percent = 0
         self.install_setup_progress_detail = "Скачиваем Portable ComfyUI."
         self.install_setup_progress_meta = f"Примерное время: {self.install_setup_eta}"
@@ -12900,9 +13203,7 @@ class MainWindow(QWidget):
             return
         self.config["selected_model_choices"] = normalize_selected_model_choices(choices)
         save_config(self.config)
-        status = cached_comfy_setup_status(self.config, force=True)
-        if self.setup_page_widget is not None:
-            self.setup_page_widget.refresh_status(status)
+        self.request_setup_status_refresh()
         self.update_install_button()
 
     def start_comfy_setup_install(self) -> None:
@@ -12915,13 +13216,13 @@ class MainWindow(QWidget):
         if not spec:
             self.show_toast(f"Модель не найдена: {model_title}", True)
             return
-        status = cached_comfy_setup_status(self.config, force=True)
-        if not status.get("comfy_ready"):
+        status = setup_status_snapshot() if SETUP_STATUS_CACHE["key"] == setup_status_cache_key(self.config) else None
+        root = Path(status["root"]) if status and status.get("comfy_ready") and status.get("root") else current_comfy_root(self.config)
+        if not root or not is_comfy_root(root):
             self.show_toast("Сначала установи Portable ComfyUI.", True)
             return
-        root = current_comfy_root(self.config)
-        if root and starter_model_exists(root, spec):
-            if self.setup_page_widget is not None:
+        if starter_model_exists(root, spec):
+            if self.setup_page_widget is not None and status:
                 self.setup_page_widget.refresh_status(status)
             self.show_toast(f"{spec['title']} уже установлена.")
             return
@@ -12957,13 +13258,13 @@ class MainWindow(QWidget):
         if not spec:
             self.show_toast(f"Нода не найдена: {node_identifier}", True)
             return
-        status = cached_comfy_setup_status(self.config, force=True)
-        if not status.get("comfy_ready"):
+        status = setup_status_snapshot() if SETUP_STATUS_CACHE["key"] == setup_status_cache_key(self.config) else None
+        root = Path(status["root"]) if status and status.get("comfy_ready") and status.get("root") else current_comfy_root(self.config)
+        if not root or not is_comfy_root(root):
             self.show_toast("Сначала установи Portable ComfyUI.", True)
             return
-        root = current_comfy_root(self.config)
-        if root and node_is_installed(root, spec):
-            if self.setup_page_widget is not None:
+        if node_is_installed(root, spec):
+            if self.setup_page_widget is not None and status:
                 self.setup_page_widget.refresh_status(status)
             self.show_toast(f"{spec['title']} уже установлена.")
             return
@@ -13045,7 +13346,11 @@ class MainWindow(QWidget):
             pass
         self.clear_settings_dirty()
         self.load_controls_from_config(force=True)
-        status = cached_comfy_setup_status(self.config, force=True)
+        status = setup_status_snapshot() if SETUP_STATUS_CACHE["key"] == setup_status_cache_key(self.config) else None
+        if status is None:
+            self.pending_setup_install = (scope, force_comfy_update)
+            self.request_setup_status_refresh()
+            return
         if self.setup_page_widget is not None:
             self.setup_page_widget.refresh_status(status)
         if scope in {"manager", "manager_reinstall", "nodes", "nodes_update"} and not status.get("comfy_ready"):
@@ -13076,7 +13381,7 @@ class MainWindow(QWidget):
                 self.config["comfy_root"] = str(chosen_root)
                 save_config(self.config)
                 self.load_controls_from_config(force=True)
-                status = cached_comfy_setup_status(self.config, force=True)
+                status = setup_status_snapshot() or initial_setup_status(self.config)
                 if self.setup_page_widget is not None:
                     self.setup_page_widget.set_install_target_path("")
                     self.setup_page_widget.refresh_status(status)
@@ -13329,8 +13634,7 @@ class MainWindow(QWidget):
                 self.action_visual_state = "start"
 
     def on_action_button_clicked(self) -> None:
-        refresh_runtime_process_caches()
-        snap = runtime_snapshot(include_logs=self.logs_view_open)
+        snap = self.current_snapshot()
         should_stop = snap.get("desired_running") or snap["comfy_active"] or snap["tunnel_active"] or snap["friend_active"]
         if self.busy:
             if should_stop and not self.stop_inflight:
@@ -13457,10 +13761,12 @@ class MainWindow(QWidget):
             if self.launch_choice_open and scope == "comfy":
                 self.onboarding_install_start_button.setEnabled(True)
                 self.onboarding_install_start_button.setText("Установить")
-                status = cached_comfy_setup_status(self.config, force=True)
-                self.refresh_onboarding_install_rows(status)
+                status = setup_status_snapshot()
+                if status:
+                    self.refresh_onboarding_install_rows(status)
                 self.onboarding_install_section.set_progress(0 if is_error else 100, message, "Установка остановилась с ошибкой." if is_error else "Готово.", True)
             self.install_setup_scope = ""
+            self.request_setup_status_refresh()
             if should_resume_poll and self.overlay_animation_count == 0 and not self.poll_timer.isActive():
                 self.poll_timer.start(POLL_MS)
         elif kind == "resetconfig" and not is_error:
@@ -14065,11 +14371,14 @@ class MainWindow(QWidget):
             if theme_changed:
                 self.setup_page_widget.apply_theme()
             now = time.monotonic()
-            should_refresh_setup = self.install_setup_inflight or (
-                self.setup_view_open and (theme_changed or now - self.last_setup_page_refresh_at >= 4.0)
-            )
+            should_refresh_setup = theme_changed
             if should_refresh_setup:
-                self.setup_page_widget.refresh_status(cached_comfy_setup_status(self.config))
+                cached_status = setup_status_snapshot()
+                if cached_status:
+                    self.setup_page_widget.refresh_status(cached_status)
+                self.last_setup_page_refresh_at = now
+            elif self.setup_view_open and now - self.last_setup_page_refresh_at >= 30.0:
+                self.request_setup_status_refresh()
                 self.last_setup_page_refresh_at = now
         self.update_action_button(snap)
         self.update_friends_button(snap)

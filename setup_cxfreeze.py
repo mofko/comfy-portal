@@ -142,7 +142,7 @@ executables = [
 
 setup(
     name="Comfy Portal",
-    version="1.0.7",
+    version="1.0.9",
     description="Mofko ComfyUI launcher and LocalTunnel manager",
     options={"build_exe": build_exe_options},
     executables=executables,
